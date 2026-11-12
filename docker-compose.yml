@@ -1,0 +1,67 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: teleguard
+      POSTGRES_USER: teleguard
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local-only-change-me}
+    volumes: ["postgres_data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U teleguard -d teleguard"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+  api:
+    build:
+      context: ./backend
+      args:
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+    image: teleguard-api:local
+    environment:
+      TG_DATABASE_URL: postgresql+psycopg://teleguard:${POSTGRES_PASSWORD:-local-only-change-me}@db:5432/teleguard
+      TG_SECRET_KEY: ${TG_SECRET_KEY:?Set TG_SECRET_KEY in .env}
+      TG_MODEL_PATH: /app/artifacts/fraud-model.joblib
+      TG_RISK_POLICY_VERSION: ${TG_RISK_POLICY_VERSION:-risk-v1}
+      TG_RISK_SUPERVISED_WEIGHT: ${TG_RISK_SUPERVISED_WEIGHT:-0.62}
+      TG_RISK_ANOMALY_WEIGHT: ${TG_RISK_ANOMALY_WEIGHT:-0.18}
+      TG_RISK_GRAPH_WEIGHT: ${TG_RISK_GRAPH_WEIGHT:-0.08}
+      TG_RISK_RULE_WEIGHT: ${TG_RISK_RULE_WEIGHT:-0.12}
+      TG_INCIDENT_RISK_THRESHOLD: ${TG_INCIDENT_RISK_THRESHOLD:-0.35}
+      TG_CORS_ORIGINS: http://localhost:5173
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      TG_ADMIN_USERNAME: ${TG_ADMIN_USERNAME:-}
+      TG_ADMIN_PASSWORD: ${TG_ADMIN_PASSWORD:-}
+    ports: ["8000:8000"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    volumes: ["model_artifacts:/app/artifacts"]
+    depends_on:
+      db: {condition: service_healthy}
+      mlflow: {condition: service_healthy}
+  web:
+    build: ./frontend
+    environment: ["VITE_API_URL=http://localhost:8000/api"]
+    ports: ["5173:80"]
+    depends_on:
+      api: {condition: service_healthy}
+  mlflow:
+    image: teleguard-api:local
+    pull_policy: never
+    command: ["mlflow", "server", "--host", "0.0.0.0", "--port", "5000", "--backend-store-uri", "sqlite:////mlflow/mlflow.db", "--serve-artifacts", "--artifacts-destination", "/mlartifacts"]
+    volumes:
+      - "mlflow_data:/mlartifacts"
+      - "mlflow_db:/mlflow"
+    expose: ["5000"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+volumes:
+  postgres_data:
+  model_artifacts:
+  mlflow_data:
+  mlflow_db:

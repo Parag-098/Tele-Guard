@@ -1,0 +1,1 @@
+Prepare a handoff for another coding agent. Summarize the task goal, current verified state, decisions made, files changed, APIs/schemas affected, commands/tests and their exact outcomes, unresolved issues, risks, and the next smallest task. Include only facts verified in the repository. Do not claim incomplete work is finished.
