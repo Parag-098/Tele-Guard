@@ -8,13 +8,14 @@ class Settings(BaseSettings):
     token_minutes: int = 720
     model_path: str = "artifacts/fraud-model.joblib"
     model_version: str = "synthetic-rf-v1"
-    risk_policy_version: str = "risk-v1"
+    risk_policy_version: str = "risk-v2"
     risk_supervised_weight: float = Field(default=0.62, ge=0, le=1)
     risk_anomaly_weight: float = Field(default=0.18, ge=0, le=1)
     risk_graph_weight: float = Field(default=0.08, ge=0, le=1)
     risk_rule_weight: float = Field(default=0.12, ge=0, le=1)
     incident_risk_threshold: float = Field(default=0.35, ge=0, le=1)
     cors_origins: str = "http://localhost:5173"
+    enable_api_docs: bool = True
     model_config = SettingsConfigDict(env_prefix="TG_", env_file=".env", extra="ignore")
 
     @model_validator(mode="after")

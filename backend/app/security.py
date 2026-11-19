@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 from jose import jwt, JWTError
 from pwdlib import PasswordHash
 from fastapi import Depends, HTTPException
@@ -21,10 +22,12 @@ def verify_password(password: str, hashed: str) -> bool:
     return passwords.verify(password, hashed)
 
 
-def make_token(user: User) -> str:
+def make_token(user: User, token_id: str | None = None) -> str:
+    token_id = token_id or uuid4().hex
     payload = {
         "sub": user.username,
         "role": user.role,
+        "jti": token_id,
         "exp": datetime.now(timezone.utc) + timedelta(minutes=settings.token_minutes),
     }
     return jwt.encode(payload, settings.secret_key, algorithm=ALGORITHM)
@@ -37,11 +40,18 @@ def current_user(token: str = Depends(oauth), db: Session = Depends(get_db)) -> 
     try:
         claims = jwt.decode(token, settings.secret_key, algorithms=[ALGORITHM])
         username = claims.get("sub")
+        token_id = claims.get("jti")
     except JWTError:
         raise error
     user = db.query(User).filter_by(username=username, active=True).first()
     if not user:
         raise error
+    if token_id:
+        from app.models import AuthSession
+
+        session = db.query(AuthSession).filter_by(token_id=token_id, username=username).first()
+        if not session or session.revoked_at is not None:
+            raise error
     return user
 
 

@@ -1,0 +1,151 @@
+name: teleguard-production
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: teleguard
+      POSTGRES_USER: teleguard
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.production}
+    volumes:
+      - ./deploy-state/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U teleguard -d teleguard"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    logging: &cloudwatch
+      driver: awslogs
+      options:
+        awslogs-region: ${AWS_REGION:-ap-south-1}
+        awslogs-group: /teleguard/production
+        awslogs-create-group: "false"
+        awslogs-stream-prefix: postgres
+        awslogs-force-flush-interval-seconds: "5"
+  mlflow:
+    image: ${ECR_REGISTRY:?Set ECR_REGISTRY}/teleguard-api:${RELEASE_TAG:?Set RELEASE_TAG}
+    command:
+      - mlflow
+      - server
+      - --host
+      - 0.0.0.0
+      - --port
+      - "5000"
+      - --backend-store-uri
+      - ${MLFLOW_BACKEND_STORE_URI:?Set MLFLOW_BACKEND_STORE_URI}
+      - --serve-artifacts
+      - --artifacts-destination
+      - s3://${MLFLOW_ARTIFACT_BUCKET:?Set MLFLOW_ARTIFACT_BUCKET}/mlflow
+    environment:
+      AWS_DEFAULT_REGION: ${AWS_REGION:-ap-south-1}
+    depends_on:
+      db: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    expose: ["5000"]
+    restart: unless-stopped
+    logging:
+      <<: *cloudwatch
+      options:
+        awslogs-region: ${AWS_REGION:-ap-south-1}
+        awslogs-group: /teleguard/production
+        awslogs-create-group: "false"
+        awslogs-stream-prefix: mlflow
+  api:
+    image: ${ECR_REGISTRY:?Set ECR_REGISTRY}/teleguard-api:${RELEASE_TAG:?Set RELEASE_TAG}
+    environment:
+      TG_DATABASE_URL: ${TG_DATABASE_URL:?Set URL-encoded TG_DATABASE_URL}
+      TG_SECRET_KEY: ${TG_SECRET_KEY:?Set TG_SECRET_KEY}
+      TG_MODEL_PATH: /app/artifacts/fraud-model.joblib
+      TG_ENABLE_API_DOCS: "false"
+      TG_CORS_ORIGINS: https://${TG_DOMAIN:?Set TG_DOMAIN}
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      AWS_DEFAULT_REGION: ${AWS_REGION:-ap-south-1}
+      TG_ADMIN_USERNAME: ${TG_ADMIN_USERNAME:-}
+      TG_ADMIN_PASSWORD: ${TG_ADMIN_PASSWORD:-}
+    volumes:
+      - ./deploy-state/models:/app/artifacts
+    depends_on:
+      db: {condition: service_healthy}
+      mlflow: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    expose: ["8000"]
+    restart: unless-stopped
+    logging:
+      <<: *cloudwatch
+      options:
+        awslogs-region: ${AWS_REGION:-ap-south-1}
+        awslogs-group: /teleguard/production
+        awslogs-create-group: "false"
+        awslogs-stream-prefix: api
+  worker:
+    image: ${ECR_REGISTRY:?Set ECR_REGISTRY}/teleguard-api:${RELEASE_TAG:?Set RELEASE_TAG}
+    command: ["python", "-m", "app.worker"]
+    environment:
+      TG_DATABASE_URL: ${TG_DATABASE_URL:?Set URL-encoded TG_DATABASE_URL}
+      TG_SECRET_KEY: ${TG_SECRET_KEY:?Set TG_SECRET_KEY}
+      TG_MODEL_PATH: /app/artifacts/fraud-model.joblib
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      AWS_DEFAULT_REGION: ${AWS_REGION:-ap-south-1}
+    volumes:
+      - ./deploy-state/models:/app/artifacts
+    depends_on:
+      api: {condition: service_healthy}
+      mlflow: {condition: service_healthy}
+    restart: unless-stopped
+    logging:
+      <<: *cloudwatch
+      options:
+        awslogs-region: ${AWS_REGION:-ap-south-1}
+        awslogs-group: /teleguard/production
+        awslogs-create-group: "false"
+        awslogs-stream-prefix: worker
+  web:
+    image: ${ECR_REGISTRY:?Set ECR_REGISTRY}/teleguard-web:${RELEASE_TAG:?Set RELEASE_TAG}
+    expose: ["80"]
+    depends_on:
+      api: {condition: service_healthy}
+    restart: unless-stopped
+    logging:
+      <<: *cloudwatch
+      options:
+        awslogs-region: ${AWS_REGION:-ap-south-1}
+        awslogs-group: /teleguard/production
+        awslogs-create-group: "false"
+        awslogs-stream-prefix: web
+  proxy:
+    image: caddy:2.10-alpine
+    environment:
+      TG_DOMAIN: ${TG_DOMAIN:?Set TG_DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./deploy-state/caddy:/data
+      - ./deploy-state/caddy-config:/config
+    depends_on:
+      web: {condition: service_started}
+      api: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO /dev/null http://127.0.0.1:2019/config/"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    logging:
+      <<: *cloudwatch
+      options:
+        awslogs-region: ${AWS_REGION:-ap-south-1}
+        awslogs-group: /teleguard/production
+        awslogs-create-group: "false"
+        awslogs-stream-prefix: proxy

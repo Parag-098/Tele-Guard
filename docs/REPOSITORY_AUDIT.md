@@ -115,4 +115,12 @@ Architecture changes needed: turn the logical diagram into a concrete package/sc
 
 The implementation roadmap is in [IMPLEMENTATION_ROADMAP.md](IMPLEMENTATION_ROADMAP.md). Phase 2 establishes the complete local application core and end-to-end synthetic incident journey. Phase 3 integrates, hardens, proves the MLOps lifecycle, and deploys/verifies on AWS. The proposed sequence reduces prompt count while retaining internal dependency gates and acceptance checks.
 
+## Follow-up re-audit (2026-11-16)
+
+This document records the original empty-workspace audit and remains historical. The checked-out repository now contains the implemented application and MLOps lifecycle. The current Phase 3 re-audit found that SHAP, resolution provenance, investigation filters, and browser verification have since been completed locally; see [FINAL_VERIFICATION_REPORT.md](FINAL_VERIFICATION_REPORT.md). Production Compose/CI release wiring is prepared and locally validated, but AWS and hosted GitHub execution remain blocked by unavailable external access. Do not use the original “no application implementation” findings as the current repository state.
+
 **Decision blockers:** AWS account/region and monthly budget or student credits; domain/DNS availability (HTTPS can still use an AWS-hosted hostname if no custom domain); and whether a suitable account permits RDS or whether the lowest-cost EC2 persistence option is required. The application stack and simulation boundary do not require further user decisions.
+
+## Latest implementation state — 2026-11-19
+
+The audit checkpoint above predates the 150,000-row versioned operational dataset, durable seed worker, data observatory, CSV path and final MLOps promotion acceptance. See [IMPLEMENTATION_AND_LOCAL_ACCEPTANCE_2026-11-19.md](IMPLEMENTATION_AND_LOCAL_ACCEPTANCE_2026-11-19.md) for the current code/spec comparison and live local evidence. It records a **NO-GO** recommendation for AWS until the release-image build and cloud acceptance gates are verified.

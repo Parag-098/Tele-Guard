@@ -6,7 +6,8 @@ TeleGuard AI is an educational fraud intelligence simulation using synthetic tel
 
 - `backend/`: FastAPI modular monolith, SQLAlchemy, Alembic, synthetic generation and scikit-learn inference.
 - `frontend/`: React + TypeScript + Vite responsive investigation workspace.
-- `docker-compose.yml`: PostgreSQL, API, web UI, and private MLflow service. MLflow reuses the API image/version and has persistent backend and artifact volumes.
+- `docker-compose.yml`: local PostgreSQL, API, web UI, and private MLflow service with local persistent volumes.
+- `docker-compose.prod.yml`: prepared single-EC2 production stack with Caddy HTTPS, private PostgreSQL and MLflow, bind-mounted EBS data, S3-backed MLflow artifacts, and CloudWatch logs.
 - `backend/app/schemas/event-contract.json`: canonical `event-v1` event contract.
 
 ## Local development (Docker)
@@ -30,6 +31,16 @@ Invoke-RestMethod -Method Post http://localhost:8000/api/scenarios/generate -Hea
 ```
 
 The generator is reproducible for the same seed and event count. Ingestion is idempotent by `event_id`. Every event is persisted and scored by a trained Random Forest plus separate anomaly, graph and rule signals; persisted evidence includes the component values. Incident changes, notes, simulated actions and model training runs are persisted. Use the **Train candidate** button or `docker compose exec api python -m app.train` to train/evaluate and record a model run. Metrics describe synthetic generated data only.
+
+The **MLOps lifecycle** page runs the versioned baseline → seeded feature drift → PSI report → real retraining → same-holdout challenger evaluation → administrator decision workflow. Candidates do not automatically replace the active model. Administrators can approve/reject and roll back to previously approved versions. Individual saved predictions can be explained on demand with SHAP for the exact recorded model and feature schema. Location/travel evidence, administrator-controlled shadow/canary serving, and delayed-label model monitoring are integrated into scoring and lifecycle workflows. See [docs/MLOPS_DEMO_GUIDE.md](docs/MLOPS_DEMO_GUIDE.md) and [docs/COLLEGE_PRESENTATION_GUIDE.md](docs/COLLEGE_PRESENTATION_GUIDE.md).
+
+### Create the initial operational dataset
+
+Sign in as an Administrator, open **Data observatory**, and choose **Generate 150,000 events**. This queues a durable worker job (supported range 100,000–300,000, fixed seed recorded per version). The worker generates reproducible batches, stores normalized rows in PostgreSQL `events` with a `dataset_version`, computes as-of-time features, persists predictions/observations/incidents, then trains and tracks three supervised candidates against a chronological 70/15/15 split. Dataset, model and MLflow run IDs are persisted. Existing active models remain active until the normal challenger comparison and approval workflow promotes a candidate. Job progress and pause/resume/stop are available in Data observatory; worker heartbeat appears under **Live monitoring**.
+
+The initial dataset has 150,000 rows in `events` (24 current columns); version metadata records generator version, seed, target/count, status and model/run provenance. It is synthetic and has a 60/40 fraud/legitimate class mix by generator design. For CSV ingestion, use **CSV event ingestion** in Data observatory or `POST /api/events/upload-csv`: UTF-8 CSV, required columns `event_id,event_type,event_time,subscriber_id`, maximum 25 MB and 5,000 rows per request. The entire file is validated before any row is committed. See [the implementation and local acceptance report](docs/IMPLEMENTATION_AND_LOCAL_ACCEPTANCE_2026-11-19.md) for evidence and detailed schema counts.
+
+Data observatory reports PostgreSQL event/prediction/incident totals, dataset versions, event type/label distributions and missing-value rates. Live monitoring polls API, PostgreSQL, worker heartbeat and MLflow health plus persisted service metrics. These values come from operational records, not UI fixtures.
 
 ## Backend development without Docker
 
@@ -66,40 +77,44 @@ cd backend
 python -m pytest
 python -m ruff check app tests
 cd ..\frontend
+npm audit --audit-level=high
 npm run build
 ```
 
-CI runs backend tests/lint and frontend production build on pushes and pull requests. Docker checks require Docker Compose.
+CI runs backend tests/lint, frontend dependency audit/build, and Compose/container builds on pushes and pull requests. Docker checks require Docker Compose.
 
-## Local container verification (2026-11-12)
+## Docker build and Compose verification (2026-11-13)
 
-The Compose configuration validates and the PostgreSQL 16 service was started with a new named data volume. Both Alembic migrations were applied to that fresh PostgreSQL database; `alembic current` reported `0002_response_actions (head)`, and `alembic check` reported no new upgrade operations. The API was then run on the host against that PostgreSQL instance. Administrator bootstrap/login, seeded scenario ingestion, persisted predictions with evidence, incident status/assignment and notes, an authorized simulated monitor action, and audit records were exercised. SQL queries confirmed 140 events, 140 predictions with evidence, 121 incidents, 2 notes, 2 simulated actions, and 2 matching action audit rows. A PostgreSQL-backed Auditor login was also denied incident updates and simulated actions (HTTP 403). The frontend Docker image served HTTP 200 on port 5173, and API CORS preflight allowed that origin. Backend tests passed (9 tests), Ruff passed, `npm ci` passed with 0 vulnerabilities, and `npm run build` passed.
+The original sqlalchemy==2.0.39 (from versions: none) error was **not** caused by an invalid pin, Python version, or CPU architecture. The host Python 3.11 download succeeded; a fresh python:3.12-slim Linux/amd64 container also downloaded the same pin from https://pypi.org/simple; and the full API image later resolved and installed SQLAlchemy 2.0.39 and all other declared dependencies. The original failing HTTP response was not captured, so its precise transient error cannot be reconstructed. The evidence points to intermittent/slow access through Docker Desktop's package-network path: Docker Engine reported http.docker.internal:3128 for HTTP and HTTPS proxy, while Windows WinHTTP reported direct access. During the uncached API build, large PyPI wheels transferred at roughly 50–200 KB/s and dependency installation took 1,919 seconds. This was a throughput/network-path problem, not a dependency workaround.
 
-The complete application did **not** start wholly in Docker Compose during this verification. An initial API image build failed with a package-index read timeout. A retry spent about 28 minutes downloading dependencies; transfers from `files.pythonhosted.org` stayed around 50–80 KB/s, so it was stopped before the API image completed. A host-side probe also stalled while downloading a new 15.3 MB package from the same package source. This points to slow package-index/CDN egress in this environment, rather than a Docker-only issue.
+The Dockerfile keeps the dependency layer independent of application source: it copies pyproject.toml, installs every declared pinned dependency with pip retries and timeout, retains /root/.cache/pip through a BuildKit cache mount, then copies application and migration source. PIP_INDEX_URL remains an optional Compose build argument. The full uncached command docker compose --progress plain build --no-cache api completed successfully. A following docker compose up -d --build reused the completed API dependency layer from cache and built the frontend image successfully. No dependency pin was changed or package removed. docker buildx build --check ./backend reported no warnings.
 
-The API Dockerfile has since been adjusted so the dependency installation layer depends only on pinned `pyproject.toml` requirements, is cached with BuildKit across builds, and is not invalidated by application source changes. Pip's own cache is retained. Compose accepts a `PIP_INDEX_URL` build argument for a reachable PyPI-compatible mirror; direct dependencies remain pinned in `pyproject.toml`. `docker buildx build --check ./backend` reported no Dockerfile warnings. The frontend image also rebuilt successfully, with build context reduced to 143 KB by its new `.dockerignore`. No faster PyPI mirror is configured here, and the revised API Dockerfile has not yet completed an image build. Consequently, API container startup/health, API-container-to-PostgreSQL access, and Compose-backed MLflow training are **not verified**.
+For networks where Docker Desktop's default PyPI path is too slow or intermittently unavailable, configure Docker Desktop's outbound proxy to reach PyPI reliably, or use an organization-approved PyPI-compatible mirror through the existing build argument. Example (mirror URL is environment-specific and was not tested here):
 
-Compose now runs MLflow from the same built API image to avoid a separate image/version, persists the tracking SQLite database and artifacts in separate named volumes, enables artifact proxying for API clients, and gates API startup on MLflow health. Its configuration parses, but runtime tracking and training through this Compose service remain **unverified** until the API image build completes. The MLflow tracking port remains internal.
+~~~powershell
+$env:PIP_INDEX_URL = 'https://<approved-mirror>/simple'
+docker compose build api
+~~~
 
-The prior PostgreSQL-backed end-to-end workflow used the host API against Docker PostgreSQL; it is valid evidence for database behavior, but it does not establish full Compose startup. To use a faster package mirror, set a non-credentialed PyPI-compatible URL before building:
+Do not put mirror credentials in the build argument. Keep TLS verification enabled. The build was verified against the public PyPI URL; the alternate mirror is a documented option, not a verified requirement.
 
-```powershell
-$env:PIP_INDEX_URL = 'https://your-approved-mirror/simple'
-docker compose up --build -d
-```
+The complete Compose stack started successfully. PostgreSQL 16 passed pg_isready; the API's internal /api/health returned {"status":"ok","database":"connected","contract_version":"event-v1"}; a SQLAlchemy SELECT 1 from inside the API container returned 1; MLflow /health returned OK; and the frontend returned HTTP 200 at port 5173. The API container applied both Alembic migrations to a newly created PostgreSQL volume.
 
-Do not place credentials in this build argument. With the default PyPI source, the same Compose command is `docker compose up --build -d`.
+The initial administrator was bootstrapped from local .env settings and logged in. A real model training request through POST /api/models/train completed and returned a persisted model version and synthetic holdout metrics. MLflow at http://mlflow:5000 recorded experiment teleguard-synthetic-fraud, a run, the joblib artifact, sklearn model artifacts, and registry version 1 for TeleGuardSyntheticFraud. The private tracking service used the Compose URI and did not publish port 5000 to the host. After docker compose up -d --force-recreate mlflow, the run and registry version were still queryable; its SQLite metadata database remained on the named volume; six artifact files totaling 4,224,903 bytes remained on the artifact volume; and the API-side MLflow client downloaded the persisted 3,016,650-byte joblib artifact.
 
-Docker Desktop's per-user CLI directory was missing from `PATH` in the verification shell. On this machine it was run with:
+Checks rerun on 2026-11-13: py -3.11 -m pytest -q passed (9 tests), py -3.11 -m ruff check app tests passed, and npm run build passed (Vite reports the existing 628 KB JavaScript chunk-size warning). The Dockerfile static check passed. The GitHub Actions workflow was not dispatched to GitHub in this verification; local tests/builds are not evidence of a remote Actions run.
 
-```powershell
-$env:Path = "$env:LOCALAPPDATA\Programs\DockerDesktop\resources\bin;$env:Path"
-```
+In this PowerShell session the Docker Desktop CLI was not on PATH. Ensure Docker Desktop's CLI directory is on PATH, or use a shell where the docker command is available.
 
-Then use the standard commands above (`docker compose up --build -d`, followed by `docker compose exec api python -m app.bootstrap`).
+The usual developer start sequence remains docker compose up --build -d, then docker compose exec api python -m app.bootstrap for the first administrator.
 
+## AWS deployment readiness
+
+AWS deployment has **not** been performed. It is blocked on AWS account/role and domain access. The production Compose file, Caddy configuration, ECR/SSM GitHub Actions release job, operations guide and cost assumptions are prepared in [docs/AWS_DEPLOYMENT_GUIDE.md](docs/AWS_DEPLOYMENT_GUIDE.md). Do not consider those files evidence of a live URL, HTTPS certificate, AWS persistence, S3 artifact retrieval, or hosted CI/CD success. See [docs/FINAL_RELEASE_CHECKLIST.md](docs/FINAL_RELEASE_CHECKLIST.md) for verified and pending gates.
 ## Implemented scope and limitations
 
 Current implementation includes login/JWT, backend role dependencies, synthetic event generation/ingestion, event/prediction persistence, trained model artifact, temporal synthetic evaluation, fitted anomaly detector, NetworkX relationships, rules and evidence-backed risk score, incident queue/notes/status, audit history, reversible simulated action records, dashboard/event/model/scenario/incident detail/admin views, PostgreSQL Compose, Alembic schema versions, and initial MLflow tracking/model registration.
 
-Model promotion gates, model registry approval, shadow/canary routing, rollback, drift detection, delayed-label monitoring, automated retraining approval, real AWS provisioning/deployment, HTTPS, backups, cloud logs/alerts, incident assignment controls, session revocation, and exhaustive administration/settings remain incomplete. Vishing/NLP is deferred. SHAP explanations and advanced location/travel indicators are not implemented. Synthetic performance cannot establish real-world fraud performance.
+Implemented lifecycle controls include persisted PSI drift reports, real approval-gated retraining, challenger evaluation, model approval/rejection, rollback, shadow/canary routing, delayed-label monitoring, and browser-verified MLOps views. Scenario scoring stores location/travel findings with each prediction and displays them in investigation detail. Per-prediction SHAP and incident resolution provenance/search are implemented and tested. The AWS deployment is prepared but not live; see the deployment guide and release checklist. Vishing/NLP is deferred. Synthetic performance cannot establish real-world fraud performance.
+
+The 2026-11-19 acceptance pass additionally verifies the 150,000-row operational dataset, actual PostgreSQL persistence and model lifecycle promotion/rollback. Historical checkpoint statements in this README and older reports are superseded by [IMPLEMENTATION_AND_LOCAL_ACCEPTANCE_2026-11-19.md](docs/IMPLEMENTATION_AND_LOCAL_ACCEPTANCE_2026-11-19.md), which includes the measured model results, test evidence, limitations and AWS **NO-GO** decision. AWS resources were not created.

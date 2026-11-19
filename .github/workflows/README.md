@@ -1,22 +1,33 @@
-# Continuous integration
+﻿# Continuous integration and release
 
-`ci.yml` runs for pushes and pull requests. It installs the pinned backend dependencies, runs Ruff and pytest, installs the frontend lockfile with `npm ci`, and runs the production build. A container job validates the Compose file and builds the API/MLflow image and frontend image; MLflow uses the same pinned application image and a different command.
+`.github/workflows/ci.yml` runs on pushes, pull requests and version tags. CI installs pinned Python dependencies, runs Ruff and pytest, installs the frontend lockfile with `npm ci`, runs `npm audit --audit-level=high` and the production build, validates local and production Compose configuration, and builds API/web images including the same-origin `/api` production frontend.
 
-The workflow has read-only repository permissions and does not deploy. The Docker build job supplies disposable values for required Compose interpolation only; it does not start services or publish images.
+A `v*` tag enables the release job after all CI jobs pass. The release job expects a protected GitHub `production` environment and these environment/repository variables:
 
-To reproduce the CI checks locally from PowerShell:
+- `AWS_ROLE_ARN`: IAM role trusted for GitHub OIDC restricted to this repo/environment.
+- `AWS_REGION`: normally `ap-south-1`.
+- `ECR_REGISTRY`: account registry hostname, without repository or tag.
+- `EC2_INSTANCE_ID`: prepared SSM-managed instance.
+
+It builds API/web images tagged with the full commit SHA, pushes them to ECR, then uses SSM Run Command to invoke `/opt/teleguard/deploy-release.sh`. No long-lived AWS access key secret is used. The host must already have Docker, Compose, SSM Agent, IAM instance profile, protected `.env.production`, `docker-compose.prod.yml`, Caddy config and deploy script in place. The production environment can require a human reviewer before this job runs.
+
+No GitHub-hosted CI/CD execution has been observed from the current workspace because no authenticated GitHub CLI/session or repository settings access was available. A configured workflow is not evidence of a passed hosted run or successful AWS deployment.
+
+## Local PowerShell checks
 
 ```powershell
 Set-Location backend
-py -3.12 -m pip install -e '.[dev]'
-py -3.12 -m ruff check app tests
-py -3.12 -m pytest
+py -3.11 -m pip install -e '.[dev]'
+py -3.11 -m ruff check app tests
+py -3.11 -m pytest tests -q
 Set-Location ..\frontend
 npm ci
+npm audit --audit-level=high
 npm run build
 Set-Location ..
-$env:POSTGRES_PASSWORD = 'ci-only-database-password'
-$env:TG_SECRET_KEY = 'ci-only-test-secret'
+$env:POSTGRES_PASSWORD = 'local-ci-password'
+$env:TG_SECRET_KEY = 'local-ci-secret'
 docker compose config --quiet
 docker compose build api web
+docker compose --env-file .env.production.example -f docker-compose.prod.yml config --quiet
 ```

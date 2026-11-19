@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily TeleGuard PostgreSQL backup schedule
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=30m
+Unit=teleguard-backup.service
+
+[Install]
+WantedBy=timers.target

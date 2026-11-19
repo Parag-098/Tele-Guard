@@ -21,7 +21,7 @@ services:
       TG_DATABASE_URL: postgresql+psycopg://teleguard:${POSTGRES_PASSWORD:-local-only-change-me}@db:5432/teleguard
       TG_SECRET_KEY: ${TG_SECRET_KEY:?Set TG_SECRET_KEY in .env}
       TG_MODEL_PATH: /app/artifacts/fraud-model.joblib
-      TG_RISK_POLICY_VERSION: ${TG_RISK_POLICY_VERSION:-risk-v1}
+      TG_RISK_POLICY_VERSION: ${TG_RISK_POLICY_VERSION:-risk-v2}
       TG_RISK_SUPERVISED_WEIGHT: ${TG_RISK_SUPERVISED_WEIGHT:-0.62}
       TG_RISK_ANOMALY_WEIGHT: ${TG_RISK_ANOMALY_WEIGHT:-0.18}
       TG_RISK_GRAPH_WEIGHT: ${TG_RISK_GRAPH_WEIGHT:-0.08}
@@ -47,6 +47,20 @@ services:
     ports: ["5173:80"]
     depends_on:
       api: {condition: service_healthy}
+  worker:
+    image: teleguard-api:local
+    pull_policy: never
+    command: ["python", "-m", "app.worker"]
+    environment:
+      TG_DATABASE_URL: postgresql+psycopg://teleguard:${POSTGRES_PASSWORD:-local-only-change-me}@db:5432/teleguard
+      TG_SECRET_KEY: ${TG_SECRET_KEY:?Set TG_SECRET_KEY in .env}
+      TG_MODEL_PATH: /app/artifacts/fraud-model.joblib
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+    volumes: ["model_artifacts:/app/artifacts"]
+    depends_on:
+      api: {condition: service_healthy}
+      mlflow: {condition: service_healthy}
+    restart: unless-stopped
   mlflow:
     image: teleguard-api:local
     pull_policy: never
