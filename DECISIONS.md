@@ -52,3 +52,17 @@ Status values: **Accepted baseline**, **To validate**, **Deferred**.
 | D026 | Evaluate challengers on a common chronological holdout with a fixed 0.30 threshold and PR-AUC/recall/FPR gates | Accepted for educational demo | Lower operating threshold prioritizes fraud recall; gates cap recall and false-positive regression. Metrics remain synthetic and the policy requires domain validation before real use. |
 
 Add a new entry before changing an accepted architecture decision. Include context, options, decision, consequences and date.
+
+## Incremental release decisions 2026-11-28
+
+The duplicated D024–D026 identifiers above belong to their original dated sections. Use date plus ID when referring to those records. D013 describes the November 12 starter workspace and is historical. D021's two-model/80–20 baseline and the November 15 fixed threshold apply to their original demo only. The newer release plan uses D029 onward.
+
+| ID | Decision | Status | Rationale / revisit condition |
+|---|---|---|---|
+| D029 | Extend the current modular monolith and durable PostgreSQL jobs, retaining MLflow and Docker Compose | Accepted for planning | Keeps local execution and historical data intact. Revisit worker isolation only if measured training affects serving or monitoring. |
+| D030 | Separate the historic dataset, development splits, independent challenge set, adaptation timeline and live cohorts | Accepted for planning | Prevents historical overwrites and test leakage. External datasets remain optional. |
+| D031 | Capture served feature/score windows and maintain separate quality, shift and labeled performance signals | Accepted for planning | Trigger only eligible, validated automatic training. SQLite tests are insufficient for PostgreSQL race and recovery evidence. |
+| D032 | Use full subscriber hash and versioned release gates with human approval and one persisted release epoch | Accepted for planning | Fixes the common-prefix distribution and stale comparison problem. Preserve historical evidence under its original policy. |
+| D033 | Add bounded case correlation and adjudication provenance to current incident records | Accepted for planning | Makes workload/episode trade-offs measurable. Preserve notes, actions and audit compatibility. |
+| D034 | Prefer EC2-first with reproducible infrastructure definitions, private S3, pinned images and tested restore | Accepted for planning | Plan locally before external authorization. PostgreSQL on encrypted EC2 storage is the default demo target; evaluate optional RDS after capacity/budget validation. |
+| D035 | Preserve all dated evidence and split local completion, AWS readiness and live verification | Accepted for planning | Static checks and synthetic results have specific evidentiary limits. Cloud changes require separate authorization. |

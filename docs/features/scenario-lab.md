@@ -31,3 +31,9 @@ Events may carry a synthetic location token and/or a latitude/longitude pair. Co
 - `POST /api/mlops/scenarios` stores bounded thresholds and named event-type/location-token rules (Administrator only).
 - Evidence is stored with each `Prediction` and shown in the investigation evidence panel.
 - Migration `0006_context_serving_labels` adds optional synthetic coordinates to events.
+
+## Integrated live-network laboratory TG-03 and TG-07
+
+Use the real persistent simulator, ingestion service, case pipeline, monitoring scheduler and retraining worker described in the [dataset specification](../DATASET_AND_SIMULATOR.md). Keep existing scenario generation and context features available. Tag each controlled run and persist seed, clock schedule, cohort, linked reports, release and job records. Show clean reference, legitimate behavior shift, true prevalence shift, unseen fraud variant, label-confirmed performance degradation, invalid/missing data, delayed labels and recovery after eligible retraining as reproducible presets.
+
+Acceleration changes processing pace and scheduled logical windows; never reveal outcomes early or fabricate scores. Document the minimum events per window and outcome-arrival offset, run one clean control replay and explain any run that lacks evidence. Use the [full demonstration](../COLLEGE_PRESENTATION_GUIDE.md#incremental-release-demonstration) and E-03/E-07 tests in the [matrix](../TESTING_AND_TRACEABILITY.md#requirement-to-test-matrix).

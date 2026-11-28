@@ -1,0 +1,54 @@
+{
+  "schema": "teleguard-production-shape-smoke-v1",
+  "captured_at_local": "2026-11-28 Asia/Kolkata",
+  "base_commit": "1898bd984d1fd6e505e5ba26fe2160885c3684ef",
+  "command": "TG_API_IMAGE=teleguard-api:local TG_WEB_IMAGE=teleguard-web:release RUN_BROWSER_SMOKE=1 deploy/smoke-release.sh",
+  "exit_code": 0,
+  "images": {
+    "api": "sha256:633dcd9945f341f1aa5ea185a727caf454f3412c12abc6847f095107d6865ac9",
+    "web": "sha256:2ab56b0236d5d108b50ef5079aa58bf80aea79d73434627fff37580d361f8ecb"
+  },
+  "web_runtime": {
+    "user": "101",
+    "listen_port": 8080,
+    "container_read_only": true,
+    "capabilities_dropped": "ALL",
+    "no_new_privileges": true,
+    "tmpfs": "/tmp:rw,noexec,nosuid,size=64m"
+  },
+  "fresh_release_stack": {
+    "postgresql": "healthy",
+    "alembic_head": "0010_investigations",
+    "bootstrap": "passed",
+    "readiness": "ready; database connected",
+    "authenticated_inference": {
+      "result": "passed",
+      "risk_score": 0.6533113506667793
+    },
+    "mlflow_postgresql_artifact_round_trip": {
+      "result": "passed",
+      "run_id": "7c1170e49b5d456c9dedfc2bd3dc7367"
+    },
+    "api_worker_restart_recovery": "passed",
+    "browser_mlop_check": {
+      "passed": 1,
+      "total": 1
+    }
+  },
+  "backup_and_restore": {
+    "archive_sha256": "e931f96b821320c529f45d0251417448a77a0cba66e6505cb122c4041e3e8ba4",
+    "application_dump_checksum": "verified",
+    "mlflow_dump_checksum": "verified",
+    "model_cache_checksum": "verified",
+    "manifest_checksum": "verified",
+    "restore_network": "disabled",
+    "restored_champion": "synthetic-20261128153843514079",
+    "restored_api_authenticated_inference_event_id": "restored-api-smoke-910365fc467044598c170d346bd3f9ea",
+    "restored_api_prediction": "served successfully using restored champion"
+  },
+  "cleanup": "Scoped smoke Compose containers and network removed by the script; historical and copied acceptance volumes were not reset or removed.",
+  "limitations": [
+    "This is a local production-shape Compose acceptance, not an AWS deployment.",
+    "The browser smoke covers the release MLOps route; the separate full application browser regression is 9/9 against the same unchanged application source."
+  ]
+}

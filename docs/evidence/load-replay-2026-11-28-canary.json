@@ -1,0 +1,65 @@
+{
+  "api_url": "http://127.0.0.1:8000/api",
+  "environment": {
+    "container_memory": {
+      "teleguard-acceptance-api-1": {
+        "peak_bytes": 435578470,
+        "samples": 169
+      },
+      "teleguard-acceptance-db-1": {
+        "peak_bytes": 307337625,
+        "samples": 169
+      },
+      "teleguard-acceptance-mlflow-1": {
+        "peak_bytes": 2080911654,
+        "samples": 169
+      },
+      "teleguard-acceptance-worker-1": {
+        "peak_bytes": 175531622,
+        "samples": 169
+      }
+    },
+    "logical_cpus": 16,
+    "platform": "Windows-10-10.0.26300-SP0",
+    "python": "3.11.9"
+  },
+  "error_classes": {
+    "TimeoutError": 2
+  },
+  "finished_at_utc": "2026-11-28T13:40:17.381558+00:00",
+  "first_event_id": "evt_cab272a10e4324063b0482a7",
+  "generator_namespace": "load-0a01b564163f422d",
+  "per_status": {
+    "201": 7198,
+    "None": 2
+  },
+  "results": {
+    "error_rate": 0.0002777777777777778,
+    "errors": 2,
+    "jobs_queued_after": 0,
+    "jobs_running_after": 0,
+    "observed_throughput_rps": 6.097,
+    "persisted_event_delta": 7200,
+    "persisted_prediction_delta": 7200,
+    "request_latency_ms": {
+      "max": 10015.0,
+      "p50": 5078.0,
+      "p95": 7218.0
+    },
+    "schedule_lag_ms_p95": 464753.0,
+    "scheduled": 7200,
+    "successful": 7198,
+    "wall_seconds": 1180.672
+  },
+  "run_id": "0a01b564163f422d",
+  "schedule": {
+    "burst_multiplier": 2.0,
+    "burst_seconds": 60,
+    "steady_rps": 10.0,
+    "steady_seconds": 600,
+    "workers": 32
+  },
+  "schema": "teleguard-load-replay-v1",
+  "started_at_utc": "2026-11-28T13:20:36.709559+00:00",
+  "synthetic_only": true
+}

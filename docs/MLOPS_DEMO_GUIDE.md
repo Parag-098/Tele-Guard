@@ -1,5 +1,7 @@
 # TeleGuard AI MLOps demonstration
 
+> This guide demonstrates the original button-driven local lifecycle with stored demo snapshots. For the planned scheduled monitoring and automatic retraining demonstration, use the [incremental college script](COLLEGE_PRESENTATION_GUIDE.md#incremental-release-demonstration). Treat reset instructions below as scoped to a disposable demo environment with protected historical data.
+
 This guide runs the local synthetic-data lifecycle: baseline → feature drift → PSI report → real retraining → common-set evaluation → administrator decision → optional rollback. It never uses subscriber data or changes real-world services.
 
 ## Start the application
@@ -43,3 +45,11 @@ Select **Reset demo data** and confirm. It removes drift snapshots and demo drif
 - **Rollback unavailable:** only a registered and previously approved model can be selected.
 
 All metrics are from synthetic data and are not real-world performance estimates.
+
+## Incremental accelerated lab
+
+Use a tagged replay through the real simulator and scoring path, versioned reference/shift and quality windows, safely delayed labels, persisted monitoring and automatic eligible retraining. Follow the [Scenario Lab](features/scenario-lab.md#integrated-live-network-laboratory-tg-03-and-tg-07) for presets and the [lifecycle](features/model-lifecycle.md#incremental-lifecycle-tg-06-to-tg-08) for release evidence. Preserve legacy snapshots for historical reproduction. Never reset shared or historical records to prepare a presentation.
+
+## Current integrated lifecycle record — 2026-11-28
+
+The latest completed local lifecycle evidence is [integrated-lifecycle-2026-11-28.json](evidence/integrated-lifecycle-2026-11-28.json). The simulator, monitoring, investigator workflow, frozen-label training trigger, candidate gate, human approval, shadow/canary, rollback and restored-state inference were exercised against isolated synthetic acceptance state. A supported 480-label trigger created one durable worker job; a separate exit-after-registry-write crash was reconciled after restart to one canonical run and never self-promoted. Actual rollout allocation was 1,371/7,200 with zero fallback, followed by audited rollback. Current release/restore details are in [release-smoke evidence](evidence/release-smoke-2026-11-28.json). Use the [current acceptance report](LOCAL_ACCEPTANCE_2026-11-28.md) for warnings and limitations; all metrics are synthetic.

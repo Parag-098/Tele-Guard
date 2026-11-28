@@ -5,13 +5,12 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from app.db import SessionLocal
+from app.config import settings
 from app.models import (
     AuditLog,
     DatasetVersion,
     Event,
-    Incident,
     MLOpsJob,
-    MLOpsRecord,
     ModelObservation,
     ModelRun,
     Prediction,
@@ -38,8 +37,10 @@ def queue_job(db, kind: str, requested_by: str, arguments: dict) -> MLOpsJob:
     )
     db.add(job)
     db.flush()
+    summary = {key: value for key, value in arguments.items()
+               if key not in {"example_ids", "frozen_outcomes"}}
     db.add(AuditLog(actor=requested_by, action=f"mlops.job_queued.{kind}", target=job.id,
-                    details={"arguments": arguments}))
+                    details={"arguments": summary}))
     return job
 
 
@@ -51,11 +52,13 @@ def process_seed_dataset(job_id: str) -> dict:
     predictions, so the same job resumes without deleting or duplicating data.
     """
     from app.batch_scoring import BatchScoringState
+    from app.investigations import attach_predictions
     from app.main import (
         _mlops_state,
         current_scenario_config,
         current_serving_config,
         load_model_run,
+        persist_serving_snapshot,
     )
     from app.ml import FeatureState, load_model, train_model, track_training_run
     from app.models import AuthSession  # noqa: F401 - ensures model metadata import order
@@ -112,7 +115,6 @@ def process_seed_dataset(job_id: str) -> dict:
                                     target=challenger_version, reason=str(exc)[:250],
                                     details={"champion_retained": True, "job_id": job_id}))
                     db.commit()
-                    serving = {"mode": "champion"}
         scenario = current_scenario_config(db)
         feature_state = FeatureState()
         signal_state = BatchScoringState()
@@ -144,7 +146,7 @@ def process_seed_dataset(job_id: str) -> dict:
                     "event_id": result["event_id"],
                     "model_version": result["model_version"],
                     "feature_version": result["feature_version"],
-                    "policy_version": "risk-v2",
+                    "policy_version": settings.risk_policy_version,
                     "probability": result["probability"],
                     "anomaly_score": result["anomaly_score"],
                     "graph_score": result["graph_score"],
@@ -157,29 +159,25 @@ def process_seed_dataset(job_id: str) -> dict:
                 db.execute(p_insert.values(prediction_values).on_conflict_do_nothing(index_elements=[Prediction.event_id]))
                 prediction_rows = db.query(Prediction).filter(Prediction.event_id.in_([r["event_id"] for r in new_predictions])).all()
                 predictions_by_event = {prediction.event_id: prediction for prediction in prediction_rows}
-                observations, incidents = [], []
+                observations = []
                 for result in new_predictions:
                     prediction = predictions_by_event[result["event_id"]]
-                    for model_version, role, probability in result["observations"]:
+                    for model_version, role, probability, threshold in result["observations"]:
                         observations.append({
                             "prediction_id": prediction.id,
                             "model_version": model_version,
                             "serving_role": role,
                             "probability": probability,
-                            "predicted_label": int(probability >= 0.5),
+                            "predicted_label": int(probability >= threshold),
                         })
-                    if result["risk_score"] >= 0.35:
-                        event = by_event_id[result["event_id"]]
-                        incidents.append({
-                            "prediction_id": prediction.id,
-                            "subscriber_id": event.subscriber_id,
-                            "title": f"Elevated synthetic risk — {event.event_type}",
-                            "severity": result["risk_band"],
-                            "status": "New",
-                        })
+                    if serving.get("deployment_id"):
+                        observation = next(item for item in result["observations"] if item[0] == prediction.model_version)
+                        persist_serving_snapshot(
+                            db, by_event_id[prediction.event_id], prediction, serving,
+                            result["monitor_features"], observation[3], observation[1], "offline_seed",
+                        )
                 db.execute((pg_insert(ModelObservation) if db.bind.dialect.name == "postgresql" else sqlite_insert(ModelObservation)).values(observations))
-                if incidents:
-                    db.execute((pg_insert(Incident) if db.bind.dialect.name == "postgresql" else sqlite_insert(Incident)).values(incidents))
+                attach_predictions(db, [(by_event_id[p.event_id], p) for p in prediction_rows], job.requested_by)
 
             completed += len(batch)
             dataset.row_count = completed
@@ -236,14 +234,6 @@ def process_seed_dataset(job_id: str) -> dict:
         metadata.update({"model_version": result["version"], "mlflow_run_id": run_id,
                          "training_rows": count, "features": result["metrics"].get("dataset_rows")})
         dataset.metadata_json = metadata
-        initial_prediction_count = int(metadata.get("initial_prediction_count", 0))
-        if initial_prediction_count == 0:
-            db.add(MLOpsRecord(kind="approved_model", version=result["version"],
-                               payload={"reason": "initial versioned dataset training"},
-                               created_by=job.requested_by))
-            db.add(MLOpsRecord(kind="active_model", version=result["version"],
-                               payload={"reason": "initial versioned dataset training"},
-                               created_by=job.requested_by))
         db.add(AuditLog(actor=job.requested_by, action="dataset.initial_seeded", target=version,
                         details={"rows": count, "model_version": result["version"], "mlflow_run_id": run_id}))
         job.result = {"dataset_version": version, "rows": count, "model_version": result["version"],

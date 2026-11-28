@@ -1,5 +1,7 @@
 # AGENTS.md — Instructions for every coding agent
 
+> Use the [incremental specification](TeleGuard_AI_Product_Scope_and_Feature_Blueprint.md#14-requirements-for-the-incremental-release-2026-11-28) and [execution plan](TeleGuard_AI_Vibe_Coding_Execution_Plan.md#16-execution-plan-for-the-incremental-release-2026-11-28) together. Current task and authorization determine whether the agent may implement or only plan.
+
 ## Before coding
 Read `README.md`, `TeleGuard_AI_Product_Scope_and_Feature_Blueprint.md`, `TeleGuard_AI_Vibe_Coding_Execution_Plan.md`, `ARCHITECTURE.md`, `DECISIONS.md`, `TASKS.md`, and the relevant feature spec. Inspect the actual repository; do not assume previous chat context describes current code.
 
@@ -34,3 +36,15 @@ Read `README.md`, `TeleGuard_AI_Product_Scope_and_Feature_Blueprint.md`, `TeleGu
 
 ## Completion report
 State: implemented behaviour; changed files; commands run and results; acceptance criteria met/not met; known limitations; next smallest task. If a check could not run, explain why.
+
+## Incremental implementation and preservation
+
+- Preserve working UI/API behavior, datasets, models, MLflow experiments, migration history, case/audit records and original docs. Historical evidence is append-only. Mark outdated instructions as historical or superseded and link the replacement. Do not silently reduce any mandatory requirement or erase deferrals.
+- Work on one dependency-safe vertical slice at a time within the authorized end-to-end plan. Persist status and evidence in [TASKS.md](TASKS.md). Continue autonomously to the next unlocked task after validation, incorporating newly discovered required fixes from the [audit](docs/REPOSITORY_AUDIT.md).
+- Read prior tracker and diff after a restart or context compaction. Execute tests and review failures; record actual outcomes and leave unsupported gates open. Use [requirement-level evidence](docs/TESTING_AND_TRACEABILITY.md) and preserve environments with isolated test data and Docker projects.
+- Use real pipelines for demos, with original behavior covered by regression tests. Retain current components unless an evidenced defect or dependency requires a change. Document decisions, migration steps and backward compatibility.
+- Keep development and documentation authorization distinct from cloud authorization. Do not provision, spend, deploy, change live settings or perform destructive operations without the required approval. Exhaust the available locally authorized work while waiting on external access. Never require the owner to implement features manually.
+
+## Final autonomous completion checkpoint — 2026-11-28
+
+The locally authorized E-01–E-14 implementation and acceptance work is complete. Use [TASKS.md](TASKS.md#final-locally-achievable-completion-checkpoint--2026-11-28), the [traceability matrix](docs/TESTING_AND_TRACEABILITY.md#final-locally-achievable-gate-disposition--2026-11-28) and [final local acceptance report](docs/LOCAL_ACCEPTANCE_2026-11-28.md#final-local-closure-and-offline-readiness--2026-11-28) as the current status. Preserve historical findings and raw scan evidence. The API Scout BOM location mismatch is source-reconciled without suppression; the 2 medium and 28 low counts remain disclosed. E-15 hosted GitHub/AWS work remains external and unauthorized. Never infer live cloud behavior from offline validation.

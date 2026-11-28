@@ -1,12 +1,13 @@
 """Vectorized, as-of-time scoring used for large versioned event imports."""
 
-from collections import defaultdict
+from collections import defaultdict, deque
 from math import asin, cos, radians, sin, sqrt
 
 import numpy as np
 
 from app.config import settings
-from app.ml import model_feature_version, model_input
+from app.decision_policy import assigned_canary, classifier_threshold
+from app.ml import event_sort_key, model_feature_version, model_input
 
 
 class BatchScoringState:
@@ -16,7 +17,7 @@ class BatchScoringState:
         self.last_coordinates = {}
 
     def seed_context(self, rows):
-        for row in sorted(rows, key=lambda item: item["event_time"]):
+        for row in sorted(rows, key=event_sort_key):
             subscriber = row["subscriber_id"]
             for field, kind in (("device_id", "device"), ("network_token", "network"), ("sim_id", "sim")):
                 token = row.get(field)
@@ -33,7 +34,7 @@ class BatchScoringState:
                     float(row["latitude"]), float(row["longitude"]), _timestamp(row["event_time"])
                 )
 
-    def score(self, rows, feature_frame, champion, challenger=None, serving=None, scenario=None):
+    def score(self, rows, feature_frame, champion, challenger=None, serving=None, scenario=None, context=()):
         serving = serving or {"mode": "champion"}
         scenario = scenario or {
             "max_speed_kmh": 900,
@@ -45,7 +46,11 @@ class BatchScoringState:
         champion_signals = _model_signals(champion, feature_frame)
         challenger_signals = _model_signals(challenger, feature_frame) if challenger else None
         outputs = []
+        pending = deque(sorted(context, key=event_sort_key))
         for index, row in enumerate(rows):
+            current_key = event_sort_key(row)
+            while pending and event_sort_key(pending[0]) < current_key:
+                self.seed_context([pending.popleft()])
             sub = row["subscriber_id"]
             entities = [
                 (kind, row.get(field))
@@ -72,15 +77,13 @@ class BatchScoringState:
             champion_probability, champion_anomaly = champion_signals[index]
             selected_model = champion
             probability, anomaly = champion_probability, champion_anomaly
-            observations = [(champion["version"], "champion", champion_probability)]
+            observations = [(champion["version"], "champion", champion_probability, classifier_threshold(champion))]
             if challenger_signals is not None and serving.get("mode") in {"shadow", "canary"}:
                 challenger_probability, _ = challenger_signals[index]
-                canary = serving.get("mode") == "canary" and (
-                    int(row["event_id"].encode().hex()[:8], 16) % 100
-                    < int(serving.get("canary_percent", 0))
-                )
+                canary = assigned_canary(sub, serving)
                 observations.append((
-                    challenger["version"], "canary" if canary else "shadow", challenger_probability
+                    challenger["version"], "canary" if canary else "shadow", challenger_probability,
+                    classifier_threshold(challenger),
                 ))
                 if canary:
                     selected_model = challenger
@@ -117,6 +120,11 @@ class BatchScoringState:
                 "risk_band": risk_band,
                 "evidence": evidence,
                 "observations": observations,
+                "monitor_features": {
+                    key: float(value)
+                    for key, value in feature_frame.iloc[index].items()
+                    if key in selected_model.get("features", feature_frame.columns)
+                },
             })
         return outputs
 

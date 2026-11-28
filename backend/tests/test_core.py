@@ -1,9 +1,12 @@
 from datetime import datetime, timedelta, timezone
+import csv
+import io
 import pytest
 from app.ml import features, FEATURES, train_model, explain_prediction
 from app.main import load_model_run
 from app.db import SessionLocal
-from app.models import ModelRun, Event, Prediction, ModelObservation
+from app.models import ModelRun, MLOpsJob, MLOpsRecord, Event, Prediction, ModelObservation
+from app.runtime_models import ServedSnapshot
 from app.synthetic import generate_events
 from app.config import Settings
 from pydantic import ValidationError
@@ -29,6 +32,8 @@ def test_risk_policy_configuration_is_bounded_and_balanced():
         Settings(_env_file=None, risk_supervised_weight=0.5)
     with pytest.raises(ValidationError):
         Settings(_env_file=None, incident_risk_threshold=1.1)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, secret_key="too-short")
 
 
 def test_seeded_scenarios_are_reproducible_and_labeled():
@@ -89,6 +94,10 @@ def test_inference_is_persisted_and_idempotent(client, token):
     assert graph["edges"]
     again = client.post("/api/events", json=data, headers=auth(token))
     assert again.json()["duplicate"] is True
+    conflict = client.post(
+        "/api/events", json={**data, "subscriber_id": "different-subscriber"}, headers=auth(token)
+    )
+    assert conflict.status_code == 409
     found = client.get("/api/events?q=evt_test_001", headers=auth(token))
     assert found.status_code == 200 and [row["event_id"] for row in found.json()] == ["evt_test_001"]
     assert client.get("/api/dashboard", headers=auth(token)).json()["events"] == 1
@@ -114,6 +123,126 @@ def test_csv_batch_upload_is_validated_idempotent_and_persisted(client, token):
     assert duplicate.status_code == 201
     assert duplicate.json()["created"] == 0 and duplicate.json()["duplicates"] == 2
     assert client.get("/api/dashboard", headers=auth(token)).json()["events"] == 2
+    conflict_csv = (
+        "event_id,event_type,event_time,subscriber_id,duration_seconds\n"
+        "csv_event_1,CALL,2026-10-01T10:00:00Z,conflicting-subscriber,32\n"
+        "csv_new,CALL,2026-10-01T10:02:00Z,csv_sub_1,22\n"
+    )
+    conflict = client.post(
+        "/api/events/upload-csv", content=conflict_csv,
+        headers={**auth(token), "Content-Type": "text/csv"},
+    )
+    assert conflict.status_code == 409
+    assert client.get("/api/dashboard", headers=auth(token)).json()["events"] == 2
+
+
+def test_online_and_csv_scoring_match_with_tied_times_and_over_200_prior_events(client, token):
+    """Ingress paths share the same ordered, as-of feature history contract."""
+    online_subscriber, batch_subscriber = "parity-online-205", "parity-batch-205"
+    start = datetime.now(timezone.utc) - timedelta(minutes=104)
+    history = []
+    for index in range(206):
+        event_time = start + timedelta(minutes=index // 2)
+        for subscriber in (online_subscriber, batch_subscriber):
+            history.append(Event(
+                event_id=f"parity-{subscriber}-{index:03d}", event_type="CALL",
+                event_time=event_time, subscriber_id=subscriber,
+                destination_token=f"synthetic-destination-{index % 13}",
+                duration_seconds=20 + index % 70, call_direction="outgoing",
+                is_international=index % 7 == 0, is_roaming=index % 11 == 0,
+            ))
+    with SessionLocal() as db:
+        db.add_all(history)
+        db.commit()
+
+    event_time = start + timedelta(minutes=103)
+    online = {
+        "event_id": "parity-online-live", "event_type": "CALL",
+        "event_time": event_time.isoformat(), "subscriber_id": online_subscriber,
+        "destination_token": "synthetic-destination-current", "duration_seconds": 41,
+        "call_direction": "outgoing", "is_international": False, "is_roaming": False,
+    }
+    online_result = client.post("/api/events", headers=auth(token), json=online)
+    assert online_result.status_code == 201
+
+    csv_buffer = io.StringIO()
+    writer = csv.DictWriter(csv_buffer, fieldnames=list(online))
+    writer.writeheader()
+    writer.writerow({**online, "event_id": "parity-batch-live", "subscriber_id": batch_subscriber})
+    batch_result = client.post(
+        "/api/events/upload-csv", headers={**auth(token), "Content-Type": "text/csv"},
+        content=csv_buffer.getvalue(),
+    )
+    assert batch_result.status_code == 201
+    online_prediction = online_result.json()["prediction"]
+    with SessionLocal() as db:
+        batch_prediction = db.query(Prediction).filter_by(event_id="parity-batch-live").one()
+        online_snapshot = db.query(ServedSnapshot).join(
+            Prediction, Prediction.id == ServedSnapshot.prediction_id
+        ).filter(Prediction.event_id == "parity-online-live").one()
+        batch_snapshot = db.query(ServedSnapshot).join(
+            Prediction, Prediction.id == ServedSnapshot.prediction_id
+        ).filter(Prediction.event_id == "parity-batch-live").one()
+        assert online_prediction["probability"] == pytest.approx(batch_prediction.probability)
+        assert online_prediction["risk_score"] == pytest.approx(batch_prediction.risk_score)
+        assert online_prediction["anomaly_score"] == pytest.approx(batch_prediction.anomaly_score)
+        assert online_prediction["graph_score"] == pytest.approx(batch_prediction.graph_score)
+        assert online_prediction["rule_score"] == pytest.approx(batch_prediction.rule_score)
+        assert online_snapshot.values == batch_snapshot.values
+
+
+def test_late_online_and_csv_events_ignore_already_persisted_future_context(client, token):
+    start = datetime.now(timezone.utc) - timedelta(hours=3)
+    before, late, future = start, start + timedelta(hours=1), start + timedelta(hours=2)
+    history = []
+    for subscriber in ("late-online", "late-csv"):
+        history.extend((
+            Event(
+                event_id=f"{subscriber}-before", event_type="CALL", event_time=before,
+                subscriber_id=subscriber, duration_seconds=60,
+            ),
+            Event(
+                event_id=f"{subscriber}-future", event_type="AUTHENTICATION", event_time=future,
+                subscriber_id=subscriber, auth_outcome="failed",
+            ),
+        ))
+    with SessionLocal() as db:
+        db.add_all(history)
+        db.commit()
+
+    common = {
+        "event_type": "CALL", "event_time": late.isoformat(), "duration_seconds": 35,
+        "call_direction": "outgoing", "is_international": False, "is_roaming": False,
+    }
+    online = client.post("/api/events", headers=auth(token), json={
+        **common, "event_id": "late-online-arrived-last", "subscriber_id": "late-online",
+    })
+    assert online.status_code == 201
+    csv_buffer = io.StringIO()
+    writer = csv.DictWriter(csv_buffer, fieldnames=[
+        "event_id", "event_type", "event_time", "subscriber_id", "duration_seconds",
+        "call_direction", "is_international", "is_roaming",
+    ])
+    writer.writeheader()
+    writer.writerow({
+        **common, "event_id": "late-csv-arrived-last", "subscriber_id": "late-csv",
+    })
+    batch = client.post(
+        "/api/events/upload-csv", headers={**auth(token), "Content-Type": "text/csv"},
+        content=csv_buffer.getvalue(),
+    )
+    assert batch.status_code == 201
+    with SessionLocal() as db:
+        snapshots = {
+            event_id: db.query(ServedSnapshot).join(
+                Prediction, Prediction.id == ServedSnapshot.prediction_id
+            ).filter(Prediction.event_id == event_id).one()
+            for event_id in ("late-online-arrived-last", "late-csv-arrived-last")
+        }
+    assert snapshots["late-online-arrived-last"].values == snapshots["late-csv-arrived-last"].values
+    for snapshot in snapshots.values():
+        assert snapshot.values["subscriber_event_count"] == 1
+        assert snapshot.values["failed_auth_1h"] == 0
 
 
 def test_csv_upload_validation_is_atomic_and_seed_job_is_admin_only(client, token):
@@ -169,12 +298,19 @@ def test_delayed_label_is_immutable_and_dashboard_metrics_update(client, token):
     assert client.post("/api/events", json=event, headers=auth(token)).status_code == 201
     before = client.get("/api/mlops/monitoring", headers=auth(token)).json()
     assert before["pending_labels"] == 1
-    labeled = client.post("/api/predictions/evt_label_wait/label", headers=auth(token), json={"label": 1, "source": "case_review"})
+    labeled = client.post("/api/predictions/evt_label_wait/label", headers=auth(token), json={"label": 1, "reason": "Analyst confirmed the synthetic account takeover evidence"})
     assert labeled.status_code == 200 and labeled.json()["status"] == "evaluated"
+    review = client.get("/api/predictions/evt_label_wait/adjudications", headers=auth(token))
+    assert review.status_code == 200
+    assert review.json()[0]["outcome"] == "confirmed_fraud"
+    assert review.json()[0]["reviewer"] == "admin"
+    assert review.json()[0]["reason"] == "Analyst confirmed the synthetic account takeover evidence"
     assert labeled.json()["monitoring"]["received_labels"] == 1
-    duplicate = client.post("/api/predictions/evt_label_wait/label", headers=auth(token), json={"label": 0})
+    missing_reason = client.post("/api/predictions/evt_label_wait/label", headers=auth(token), json={"label": 0})
+    assert missing_reason.status_code == 422
+    duplicate = client.post("/api/predictions/evt_label_wait/label", headers=auth(token), json={"label": 0, "reason": "Attempted conflicting legacy label"})
     assert duplicate.status_code == 409
-    invalid = client.post("/api/predictions/evt_label_wait/label", headers=auth(token), json={"label": 2})
+    invalid = client.post("/api/predictions/evt_label_wait/label", headers=auth(token), json={"label": 2, "reason": "Invalid label test"})
     assert invalid.status_code == 422
 
 
@@ -215,7 +351,18 @@ def test_delayed_label_monitor_generates_rolling_degradation_alert(client, token
     assert "roll back or retrain" in monitoring["degradation_alerts"][0]["action"]
 
 
-def test_backend_rbac_and_audited_simulated_action(client, token):
+def test_backend_rbac_and_audited_simulated_action(client, token, monkeypatch):
+    # This test covers incident authorization and audited reversible actions, not
+    # whether a lone SIM_CHANGE is fraudulent. Keep its risk fixture deterministic:
+    # identity changes are legitimate lookalikes and must not be force-alerted.
+    import app.main as main
+
+    monkeypatch.setattr(main, "score", lambda *_args, **_kwargs: {
+        "probability": 0.95, "anomaly_score": 0.8, "graph_score": 0.5,
+        "rule_score": 1.0, "risk_score": 0.9, "risk_band": "Critical",
+        "evidence": [{"signal": "synthetic_test_fixture", "value": 0.9}],
+        "monitor_features": {}, "feature_version": "test-fixture-v1",
+    })
     data = {
         "event_id": "evt_case_001",
         "event_type": "SIM_CHANGE",
@@ -266,7 +413,18 @@ def test_backend_rbac_and_audited_simulated_action(client, token):
     )
 
 
-def test_incident_resolution_provenance_search_and_assignment(client, token):
+def test_incident_resolution_provenance_search_and_assignment(client, token, monkeypatch):
+    # The workflow assertions require a case to exist. Use an explicit high-risk
+    # scoring fixture instead of relying on a model artifact's synthetic score for
+    # an isolated identity-change event.
+    import app.main as main
+
+    monkeypatch.setattr(main, "score", lambda *_args, **_kwargs: {
+        "probability": 0.95, "anomaly_score": 0.8, "graph_score": 0.5,
+        "rule_score": 1.0, "risk_score": 0.9, "risk_band": "Critical",
+        "evidence": [{"signal": "synthetic_test_fixture", "value": 0.9}],
+        "monitor_features": {}, "feature_version": "test-fixture-v1",
+    })
     event = {
         "event_id": "evt_resolution_case",
         "event_type": "SIM_CHANGE",
@@ -387,6 +545,72 @@ def test_missing_trusted_model_artifact_is_downloaded_by_recorded_mlflow_run(tmp
     )
     assert load_model_run(model_run)["version"] == model_run.version
     assert calls == [("tracked-run-001", "fraud-model-synthetic-test-v1.joblib")]
+
+
+def test_api_startup_recovers_active_champion_when_local_cache_is_empty(tmp_path, monkeypatch):
+    import hashlib
+    import joblib
+    import mlflow
+    from fastapi.testclient import TestClient
+    from app.db import Base, engine
+    from app.main import _load_local_artifact, app
+
+    Base.metadata.drop_all(engine)
+    Base.metadata.create_all(engine)
+    _load_local_artifact.cache_clear()
+    artifact = tmp_path / "recovered-champion.joblib"
+    joblib.dump({"version": "cold-start-champion-v1", "algorithm": "test-fixture"}, artifact)
+    digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+    calls = []
+
+    class FakeClient:
+        def download_artifacts(self, run_id, path):
+            calls.append((run_id, path))
+            return str(artifact)
+
+    monkeypatch.setattr(mlflow, "MlflowClient", FakeClient)
+    with SessionLocal() as db:
+        db.add(ModelRun(
+            version="cold-start-champion-v1", algorithm="test-fixture",
+            dataset_version="baseline-v1", metrics={"artifact_sha256": digest},
+            artifact_path="/empty-cache/recovered-champion.joblib", mlflow_run_id="cold-run-1",
+        ))
+        db.add(MLOpsRecord(
+            kind="active_model", version="cold-start-champion-v1",
+            payload={"reason": "isolated cold-start recovery test"}, created_by="test",
+        ))
+        db.commit()
+
+    try:
+        with TestClient(app):
+            assert app.state.model["version"] == "cold-start-champion-v1"
+        assert calls == [("cold-run-1", "recovered-champion.joblib")]
+        assert artifact.exists()
+    finally:
+        _load_local_artifact.cache_clear()
+        Base.metadata.drop_all(engine)
+
+
+def test_readiness_refreshes_model_after_another_worker_promotion(client, monkeypatch):
+    import app.main as main
+
+    version = "cross-worker-promoted-champion"
+    with SessionLocal() as db:
+        db.add(ModelRun(
+            version=version, algorithm="fixture", dataset_version="fixture-v1",
+            metrics={}, artifact_path="/tmp/cross-worker-champion.joblib",
+        ))
+        db.add(MLOpsRecord(
+            kind="active_model", version=version,
+            payload={"reason": "simulated promotion by another API worker"}, created_by="test",
+        ))
+        db.commit()
+
+    monkeypatch.setattr(main, "load_model_run", lambda row: {"version": row.version})
+    main.app.state.model = {"version": "stale-worker-champion"}
+    ready = client.get("/api/ready")
+    assert ready.status_code == 200
+    assert main.app.state.model["version"] == version
 
 
 def test_admin_user_creation_and_role_protection(client, token):
@@ -523,11 +747,43 @@ def test_mlops_drift_retraining_approval_and_rollback(client, token, monkeypatch
         assert failed_prediction["model_version"] == champion
     audit = client.get("/api/audit", headers=auth(token)).json()
     assert any(row["action"] == "model.challenger_failed" and row["details"].get("champion_retained") for row in audit)
-    canary_config = client.post("/api/mlops/serving", headers=auth(token), json={"mode":"canary", "challenger_version":challenger, "canary_percent":100})
+    canary_config = client.post("/api/mlops/serving", headers=auth(token), json={"mode":"canary", "challenger_version":challenger, "canary_percent":10})
     assert canary_config.status_code == 200
-    canary_event = {"event_id":"evt_canary_check", "event_type":"CALL", "event_time":datetime.now(timezone.utc).isoformat(), "subscriber_id":"sub_canary"}
-    canary_prediction = client.post("/api/events", headers=auth(token), json=canary_event).json()["prediction"]
-    assert canary_prediction["model_version"] == challenger
+    canary_start = datetime.now(timezone.utc) - timedelta(seconds=10_000)
+    for batch_start in range(0, 10_000, 5_000):
+        lines = ["event_id,event_type,event_time,subscriber_id,duration_seconds"]
+        for index in range(batch_start, batch_start + 5_000):
+            event_time = (canary_start + timedelta(seconds=index)).isoformat()
+            lines.append(f"canary_release_{index:05d},CALL,{event_time},canary_shared_prefix_{index:05d},60")
+        uploaded = client.post("/api/events/upload-csv", content="\n".join(lines),
+                               headers={**auth(token), "Content-Type": "text/csv"})
+        assert uploaded.status_code == 201
+        assert uploaded.json()["created"] == uploaded.json()["predictions"] == 5_000
+    canary_allocation = client.get("/api/mlops", headers=auth(token)).json()["canary_allocation"]
+    assert canary_allocation["configured_percent"] == 10
+    assert canary_allocation["events"] == canary_allocation["subscribers"] == 10_000
+    assert 800 <= canary_allocation["assigned_subscribers"] <= 1_200
+    assert canary_allocation["assigned_events"] == canary_allocation["served_events"]
+    assert canary_allocation["fallback_events"] == 0
+    from app.decision_policy import assigned_canary
+    from app import main as app_main
+
+    fallback_subscriber = next(
+        f"fallback_canary_{index}" for index in range(10_000)
+        if assigned_canary(f"fallback_canary_{index}", canary_config.json())
+    )
+    with monkeypatch.context() as patch:
+        patch.setattr(app_main, "load_model_run",
+                      lambda _row: (_ for _ in ()).throw(RuntimeError("synthetic canary artifact failure")))
+        fallback_response = client.post("/api/events", headers=auth(token), json={
+            "event_id": "evt_canary_fallback", "event_type": "CALL",
+            "event_time": datetime.now(timezone.utc).isoformat(),
+            "subscriber_id": fallback_subscriber,
+        })
+        assert fallback_response.status_code == 201
+        assert fallback_response.json()["prediction"]["model_version"] == champion
+    canary_fallbacks = client.get("/api/mlops", headers=auth(token)).json()["canary_allocation"]
+    assert canary_fallbacks["fallback_events"] == 1
     assert client.post("/api/mlops/serving", headers=auth(token), json={"mode":"champion"}).status_code == 200
     assert (
         client.post(
@@ -545,6 +801,19 @@ def test_mlops_drift_retraining_approval_and_rollback(client, token, monkeypatch
         ).status_code
         == 403
     )
+    stale_release = f"concurrent-release-{challenger}"
+    with SessionLocal() as db:
+        db.add(MLOpsRecord(kind="active_model", version=stale_release,
+                           payload={"reason": "stale approval regression"}, created_by="test"))
+        db.commit()
+    stale_decision = client.post(
+        f"/api/mlops/decisions/{challenger}", headers=auth(token),
+        json={"decision": "approve", "reason": "comparison was made against the previous champion"},
+    )
+    assert stale_decision.status_code == 409
+    with SessionLocal() as db:
+        db.query(MLOpsRecord).filter_by(kind="active_model", version=stale_release).delete()
+        db.commit()
     decision = "approve" if compared.json()["passed"] else "reject"
     acted = client.post(
         f"/api/mlops/decisions/{challenger}",
@@ -567,3 +836,23 @@ def test_mlops_drift_retraining_approval_and_rollback(client, token, monkeypatch
     assert any(
         record["kind"] in {"approved_model", "rejected_model"} for record in state["records"]
     )
+
+
+def test_job_api_redacts_internal_failure_details(client, token):
+    with SessionLocal() as db:
+        db.add(MLOpsJob(
+            id="redacted-job-fixture", kind="retrain_live", status="failed",
+            requested_by="admin", arguments={}, error="/srv/app/secrets/password=private-token",
+        ))
+        db.commit()
+
+    response = client.get("/api/jobs/redacted-job-fixture", headers=auth(token))
+    assert response.status_code == 200
+    assert response.json()["error"] == (
+        "Job failed. Contact an administrator with the job ID to review operational logs."
+    )
+    assert "private-token" not in response.text
+    assert "/srv/app" not in response.text
+    summary = client.get("/api/mlops", headers=auth(token))
+    assert summary.status_code == 200
+    assert "private-token" not in summary.text

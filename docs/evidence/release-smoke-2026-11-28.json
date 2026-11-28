@@ -1,0 +1,39 @@
+{
+  "schema": "teleguard-production-shape-smoke-v1",
+  "captured_at_local": "2026-11-28 Asia/Kolkata",
+  "source_revision": "1898bd984d1fd6e505e5ba26fe2160885c3684ef",
+  "command": "TG_API_IMAGE=teleguard-api:local TG_WEB_IMAGE=teleguard-web:release RUN_BROWSER_SMOKE=1 deploy/smoke-release.sh",
+  "exit_code": 0,
+  "images": {
+    "api": "sha256:633dcd9945f341f1aa5ea185a727caf454f3412c12abc6847f095107d6865ac9",
+    "web": "sha256:28f3a7c3706aa9d1be96d87cfa74a41d77efc390c4e80e001ab38382dbe55615"
+  },
+  "fresh_release_stack": {
+    "postgresql": "healthy",
+    "mlflow_postgresql_backend": "healthy; experiment/run and artifact upload/download succeeded",
+    "alembic_head": "0010_investigations",
+    "bootstrap": "passed",
+    "readiness": "ready",
+    "authenticated_inference": "passed",
+    "api_worker_restart_recovery": "passed",
+    "browser_mlop_check": {
+      "passed": 1,
+      "total": 1,
+      "mlflow_run_id": "0a6a5866991a42449ea33b0d3cbcdb83"
+    }
+  },
+  "backup_and_restore": {
+    "archive_sha256": "07475cf828cea51826c60eb166b3eaa033b1e74c7cb2cb3d853b5447e780641f",
+    "application_dump_checksum": "verified",
+    "mlflow_dump_checksum": "verified",
+    "model_cache_checksum": "verified",
+    "manifest_checksum": "verified",
+    "restore_network": "disabled",
+    "restored_champion": "synthetic-20261128143947458655",
+    "restored_api_authenticated_inference_event_id": "restored-api-smoke-eb550ead224d4917955ae44d22d792e8",
+    "restored_api_prediction": "served successfully using restored champion"
+  },
+  "cleanup": "Scoped smoke Compose containers and network removed by the script; historical and copied acceptance volumes were not reset or removed.",
+  "raw_log": "release-smoke-2026-11-28-final3.log",
+  "warnings": ["MLflow could not find a Git executable inside the container; experiment/artifact and inference acceptance still passed."]
+}

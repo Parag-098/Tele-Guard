@@ -1,5 +1,7 @@
 # ARCHITECTURE.md
 
+> The original architecture and 2026-11-19 correction describe the preserved baseline. The [incremental architecture](#incremental-architecture-2026-11-28) adds the planned components on the same stack.
+
 ## Architectural style
 Start with a modular monolith and a small number of containers. Separate offline training jobs from online inference. Split into services only when a measured scaling, reliability, security or ownership need justifies it.
 
@@ -101,3 +103,38 @@ The operational data path now includes normalized `dataset_versions`, nullable `
 The full 2026-11-19 feature map, exact row/column counts, local test evidence, limitations and deployment decision are in [IMPLEMENTATION_AND_LOCAL_ACCEPTANCE_2026-11-19.md](docs/IMPLEMENTATION_AND_LOCAL_ACCEPTANCE_2026-11-19.md). This supersedes earlier statements here that shadow/canary, delayed labels, SHAP and location/travel remained future work. AWS remains unprovisioned and **NO-GO** pending external release acceptance.
 
 Never expose PostgreSQL, MLflow, monitoring dashboards or internal admin ports publicly. Document HTTPS, backups, security groups, secrets, cost alerts and teardown.
+
+## Incremental architecture 2026-11-28
+
+Keep the React/FastAPI modular monolith, SQLAlchemy/Alembic, PostgreSQL, scikit-learn/NetworkX, MLflow and Compose. Use logical modules in the current backend. PostgreSQL is the authoritative runtime store and job coordination mechanism. The API continues serving while the worker runs bounded training, simulator, monitoring and publishing tasks.
+
+~~~mermaid
+flowchart LR
+  A[React operations UI] -->|HTTPS and RBAC| B[FastAPI]
+  S[Persistent simulator] --> I[Shared ingest and validation]
+  B --> I
+  I --> Q[Quarantine]
+  I --> F[Event-time features and policy]
+  F --> P[Prediction and model observation]
+  P --> C[Correlated case and explanation]
+  P --> W[Scheduled served windows]
+  C --> L[Reviewed labels]
+  S -->|Delayed evidence| L
+  L --> W
+  W --> J[PostgreSQL job queue]
+  J --> T[Training and independent evaluation]
+  T --> M[MLflow and private artifacts]
+  M --> R[Audited release and rollback]
+  B --> R
+  R --> F
+~~~
+
+### Ownership and failure boundaries
+
+- FastAPI owns validation, auth/role checks, shared ingest/scoring, case actions and queries. Reuse common scoring, configuration snapshots and event ordering between single, CSV, simulator and snapshot paths. Return persisted job identifiers for bounded asynchronous work.
+- Worker owns typed leased work, scheduler intervals, retries and lineage commits. Use independent queue priorities/concurrency budgets so a long fit does not starve ingest, labels or monitoring. Separate lightweight and CPU-intensive tasks with task types and resource quotas; split worker processes only if baseline latency and measured load justify it.
+- PostgreSQL owns event uniqueness, immutable snapshot manifests, observations, case links, adjudication, lifecycle decisions and active artifact pointer. Add schema changes via Alembic; mutable operational statuses and append-only audit/evidence have distinct lifecycles.
+- MLflow owns experiment and registry metadata and uses a private artifact server with durable local storage and S3 in AWS. Artifacts are checksummed; the serving cache is derived from a verified committed release. On training failure continue an approved model, and expose degradation without incorrectly reporting success.
+- Production extends current Caddy/API/web/worker/DB/MLflow Compose on EC2. Caddy is the public HTTPS boundary, while database, artifact registry and internal monitoring stay internal. CloudWatch consumes bounded structured logs and metrics. Scope AWS authorization as specified in the [deployment guide](docs/AWS_DEPLOYMENT_GUIDE.md).
+
+Detailed [API, data, frontend and security design](docs/SYSTEM_CONTRACTS.md) and [acceptance evidence](docs/TESTING_AND_TRACEABILITY.md) are maintained separately.

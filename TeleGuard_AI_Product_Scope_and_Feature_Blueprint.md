@@ -1,5 +1,7 @@
 # TeleGuard AI — Product Scope & Feature Blueprint
 
+> **Authoritative master specification, 2026-11-28.** Sections 1–13 preserve the original blueprint. Section 14 adds binding requirements for the incremental release and supersedes conflicting descriptions of delivery order, dataset scale, evaluation and lifecycle policies. Read the [implementation plan](TeleGuard_AI_Vibe_Coding_Execution_Plan.md), [architecture](ARCHITECTURE.md), and [acceptance matrix](docs/TESTING_AND_TRACEABILITY.md) alongside it.
+
 **Working title:** TeleGuard AI  
 **Proposed subtitle:** Intelligent Telecom Fraud Detection, Investigation & Prevention Platform  
 **Document type:** Product definition and feature scope  
@@ -511,3 +513,53 @@ The first complete version of TeleGuard AI will be:
 > A cloud-deployed telecom fraud intelligence platform that ingests synthetic telecom and related authentication events, detects SIM-swap/account-takeover patterns, abnormal calling/SMS behaviour and suspicious entity networks through supervised ML, anomaly detection, graph analytics and rules, generates traceable explanations, and supports human-reviewed incident response. Its MLOps pipeline versions data and models, evaluates model candidates, monitors drift, and supports controlled retraining and rollback.
 
 This is the product scope. Only after this scope is accepted should it be converted into `PROJECT_SPECIFICATION.md`, `ARCHITECTURE.md`, feature specifications, `AGENTS.md`, and small implementation tasks.
+
+## 14. Requirements for the incremental release (2026-11-28)
+
+TeleGuard AI is a self-adaptive, explainable telecom fraud detection and investigation platform with end-to-end automated MLOps. It is a research and educational prototype that processes artificial telecom data. Adaptation means monitoring, validation, retraining and candidate evaluation can run automatically. A human approves production model promotion and simulated response actions remain authorized, audited and reversible. Claims about real operator value require independent validation and an approved integration, outside this release.
+
+The release includes existing working behavior, all unfinished original P0/P1 commitments, this extension and any fixes needed to make the integrated flows pass. Preserve original data, trained models, MLflow experiments, records, historical reports, event contracts and permissions during upgrades. Maintain compatibility with historical API consumers and features-v1/v2 artifacts where reasonable. Document, migrate and test any unavoidable incompatible change. Existing P2 ideas remain documented as optional research under the conditions below.
+
+### Mandatory requirements
+
+| ID | Requirement | Detailed design |
+|---|---|---|
+| TG-01 | Preserve and regression-test existing React, API, event imports, historical predictions, explanations, models, sessions, authorization, datasets, registry, investigation and response workflows. Keep migration and historical evidence intact. | [Architecture](ARCHITECTURE.md), [contracts](docs/SYSTEM_CONTRACTS.md) |
+| TG-02 | Keep the 150,000-row historical dataset. Deliver approximately 300,000 development events, 50,000 independent evaluation events, 50,000 drift/adaptation events and a growing live stream. Verify >100,000 unique examples in the training partition and maintain immutable manifests, checksums and replay provenance. | [Dataset and simulator](docs/DATASET_AND_SIMULATOR.md) |
+| TG-03 | Provide a durable live synthetic network simulator with controls, rate limits, concurrent profiles, replay, delayed labels, restart recovery, backpressure, controlled changes and real ingestion-backed live UI. | [Dataset and simulator](docs/DATASET_AND_SIMULATOR.md), [Scenario Lab](docs/features/scenario-lab.md) |
+| TG-04 | Deliver validated batch and continuous ingestion, atomic compatibility for existing CSV, idempotency, quarantine, traceable predictions and deterministic as-of-time training/serving parity across ingestion modes. | [Dataset and simulator](docs/DATASET_AND_SIMULATOR.md), [contracts](docs/SYSTEM_CONTRACTS.md) |
+| TG-05 | Keep at least three supervised candidates and the existing anomaly, graph, rules and SHAP layers. Evaluate honest temporal and independent scenario holdouts, calibration, class imbalance, legitimate lookalikes, prevalence variants, episode metrics, latency and resource use. | [ML policy](docs/ML_POLICY.md) |
+| TG-06 | Fix prefix-based canary routing, measure configured and realized assignment, unify policy semantics and thresholds, and enforce fresh current-champion evidence before transition. Gate shadow, ramp, promotion, suspension and rollback using persisted release state, compatibility and integrity evidence. | [Model lifecycle](docs/features/model-lifecycle.md) |
+| TG-07 | Schedule real served-traffic monitoring. Persist frozen baselines, PSI and justified complementary statistics, quality and score changes, label coverage, delayed-label metrics, and deduplicated alerts with explicit trigger policies. | [Model lifecycle](docs/features/model-lifecycle.md) |
+| TG-08 | Schedule and automatically perform eligible restartable training jobs with deduplication, budgeted retries, immutable inputs, MLflow lineage, independently testable quality gates and explicit administrator approval for promotion. Keep authorized manual request controls. | [Model lifecycle](docs/features/model-lifecycle.md) |
+| TG-09 | Record event and case adjudications with reviewer, time, source and rationale. Separate unresolved outcomes, use random low-risk audit samples, reconcile conflicting or suspect labels, and validate label lineage before dataset inclusion. | [Investigation](docs/features/investigation-and-response.md) |
+| TG-10 | Correlate related alerts into bounded investigations with preserved evidence, timeline, graphs, assignments, notes, adjudications, controlled merging and reopening, and reversible simulated responses. Measure old and new policies on the same replay, including workload and cost assumptions. | [Investigation](docs/features/investigation-and-response.md) |
+| TG-11 | Integrate responsive, accessible operations, live events, simulator, explorer, investigations, graph, SHAP, impact analytics, dataset management, MLOps control center, drift lab, administration, audit and system health in the current React application. Use actual persisted state and role-aware recovery states. | [Frontend and API contracts](docs/SYSTEM_CONTRACTS.md) |
+| TG-12 | Secure administration, ingestion, training, stored artifacts, sessions and deployment. Require least privilege, validation, appropriate rate controls, redaction, audit, dependency checks, startup/readiness, graceful shutdown, bounded resources and tested backups/restores. | [Contracts](docs/SYSTEM_CONTRACTS.md), [operations](docs/PRODUCTION_OPERATIONS.md) |
+| TG-13 | Produce a reproducible AWS release using EC2/Compose, ECR, S3, CloudWatch, IAM/SSM, GitHub OIDC, Caddy HTTPS, private PostgreSQL/MLflow and infrastructure as code. Prove local readiness without provisioning. Repeat the live acceptance only with explicit owner authorization, keeping public HTTPS deployment as the original external submission goal. | [AWS guide](docs/AWS_DEPLOYMENT_GUIDE.md) |
+| TG-14 | Pass the requirement-level test matrix and demonstrate the real end-to-end workflow, including inferior candidate rejection, safe promotion and recovery. Preserve dated evidence and explicit completion boundaries. | [Acceptance matrix](docs/TESTING_AND_TRACEABILITY.md), [demo](docs/COLLEGE_PRESENTATION_GUIDE.md) |
+
+### Optional enhancements
+
+| ID | Scope | Entry condition |
+|---|---|---|
+| TG-O1 | FraudZen CDR benchmark or ITU mobility fixture | Confirm source version, schema, terms, storage budget and score comparability. Core dataset and assessment remain self-contained. |
+| TG-O2 | Vishing transcript research or evidence-grounded LLM summaries | Complete mandatory gates first. Verify data rights and use clearly synthetic or suitably licensed material. Keep transcript scores separate and all response decisions behind backend authorization. |
+| TG-O3 | RDS, ECS, DVC or alternative ML/streaming/graph infrastructure | Require measured operational need, trade-off decision and any budget authorization. Kubernetes, SageMaker, Kafka, Spark, Airflow and GNN are outside the required architecture. |
+
+### Completion and evidence
+
+- **Documentation complete** means requirements, dependencies, architecture, risks, tests and scope-preservation checks are coherent and reviewable.
+- **Local implementation complete** means each mandatory local test has executed on the integrated release with evidence for normal, failure and recovery paths. Historical runs are context for the baseline.
+- **AWS deployment ready** means exact release images, infrastructure plan validation, local production-shape smoke tests, IAM and port checks, recovery evidence and an executable runbook are complete to the extent possible offline.
+- **AWS deployment verified** means an authorized release was exercised on AWS with public HTTPS, role checks, persistent data, artifact recovery, monitoring, deployment and restore evidence. Track cloud gates separately while external prerequisites remain pending.
+
+The [master implementation plan](TeleGuard_AI_Vibe_Coding_Execution_Plan.md) defines dependency-aware execution, and [TASKS.md](TASKS.md) records progress across sessions.
+
+### Local implementation evidence addendum — 2026-11-28
+
+The mandatory local scope remains the full union above. Its current evidence and partial/external boundaries are recorded in [the requirement-level acceptance report](docs/LOCAL_ACCEPTANCE_2026-11-28.md#integrated-local-lifecycle-and-final-acceptance--2026-11-28) and [traceability matrix](docs/TESTING_AND_TRACEABILITY.md#latest-gate-disposition--2026-11-28). E-01–E-12 and E-14 have local evidence; E-13 remains partial pending exact-image scan reconciliation; E-15 remains external and unauthorized. Dataset volumes exceed the 100,000-row academic minimum, but all reported model and incident metrics are synthetic.
+
+### Final scope-preserving acceptance update — 2026-11-28
+
+The preceding evidence addendum is historical and is superseded only for final gate status by [the final local acceptance section](docs/LOCAL_ACCEPTANCE_2026-11-28.md#final-local-closure-and-offline-readiness--2026-11-28). E-01–E-14 are locally accepted across the union of existing application features, prior commitments, this specification and repository-audit fixes. E-13 includes a full exact final-web-image scan, retained API Scout finding reconciliation, validated production-shape release/recovery and regional calculator estimate; API Scout's 2 medium and 28 low counts remain disclosed. E-15 remains external and unauthorized. Existing datasets, models, MLflow runs, DB volumes, documentation and Git history are preserved. The 150,000 historical rows, 300,000-event development manifest and 209,285 eligible training examples exceed the academic size requirement, and all data/performance metrics remain synthetic-only.

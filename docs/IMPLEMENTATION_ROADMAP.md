@@ -1,5 +1,7 @@
 # TeleGuard AI Implementation Roadmap
 
+> This roadmap preserves the original Phase 2/3 plan and checkpoints. The [incremental execution plan](../TeleGuard_AI_Vibe_Coding_Execution_Plan.md#16-execution-plan-for-the-incremental-release-2026-11-28) is the current sequence after separate authorization. The [task tracker](../TASKS.md#incremental-release-progress-2026-11-28) contains new progress.
+
 This roadmap consolidates the remaining build into the requested two major coding prompts after the completed repository audit. Each prompt should direct the implementation agent to inspect the actual repository, implement the full bounded phase, and report exact verification evidence. Work within each phase can proceed in dependency order without creating a long series of user prompts.
 
 ## Starting point
@@ -160,3 +162,7 @@ Use one Phase 2 implementation prompt that points to this roadmap and the releva
 ## 2026-11-19 completion pass superseding the checkpoint above
 
 The earlier checkpoints in this file are historical and their statements that SHAP, CSV, location/travel, shadow/canary and delayed-label features were missing are stale. See [IMPLEMENTATION_AND_LOCAL_ACCEPTANCE_2026-11-19.md](IMPLEMENTATION_AND_LOCAL_ACCEPTANCE_2026-11-19.md) for the complete feature-by-feature result and actual test evidence. The current pass added the normalized, versioned 150,000-row operational dataset, batched ingestion, durable worker/health and data observatory views; it also corrected the historical initial Alembic migration so clean installs reach `0008`. The preserved local PostgreSQL volume is at `0008` and contains the generated dataset, predictions and candidate model run. Local acceptance is complete after the final post-fix browser rerun. AWS deployment remains explicitly unperformed; recommendation is **NO-GO** until the listed AWS and release gates pass.
+
+## Incremental roadmap pointer 2026-11-28
+
+The preserved Phase 2/3 exit gates inform the new acceptance matrix. Current scope adds scoring and release correctness, durable live simulation, independent evaluation, real monitoring, automated training, case feedback/correlation, UI integration, and local and hosted operational evidence. Review [current audit and fix register](REPOSITORY_AUDIT.md#incremental-release-audit-2026-11-28) before applying the historical “recommended next action” above.

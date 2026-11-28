@@ -1,0 +1,9 @@
+[Unit]
+Description=Publish TeleGuard operational metrics every minute
+[Timer]
+OnBootSec=120
+OnUnitActiveSec=60
+Unit=teleguard-metrics.service
+
+[Install]
+WantedBy=timers.target

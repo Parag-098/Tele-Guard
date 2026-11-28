@@ -1,0 +1,29 @@
+{
+  "schema": "teleguard-image-scan-reconciliation-v1",
+  "captured_at_local": "2026-11-28 Asia/Kolkata",
+  "image_digest": "sha256:633dcd9945f341f1aa5ea185a727caf454f3412c12abc6847f095107d6865ac9",
+  "scanner": "Docker Scout CLI 1.28.0",
+  "full_image_counts": {
+    "critical": 0,
+    "high": 1,
+    "medium": 2,
+    "low": 28,
+    "indexed_packages": 301
+  },
+  "high_finding": {
+    "cve": "CVE-2025-47273",
+    "package_as_reported": "pkg:pypi/setuptools@70.3.0",
+    "severity": "HIGH",
+    "affected_range": "<78.1.1",
+    "fixed_version": "78.1.1",
+    "reported_location": "/usr/local/lib/python3.12/site-packages/pip/_vendor/bom.cdx.json",
+    "raw_unsuppressed_report": "api-scout-high-2026-11-28.sarif",
+    "installed_pip_version": "26.3",
+    "installed_setuptools_version": "84.2.1",
+    "pip_vendor_setuptools_import_spec": null,
+    "embedded_bom_sha256": "5c78ac0296d2e95805bdad6b8dfbdaa292eab2506bf0e519f4a4c1a6fc4310e8",
+    "disposition": "Reconciled as an embedded pip CycloneDX metadata component rather than an installed/importable setuptools package. The original unsuppressed Scout finding is preserved; no exception or scanner suppression was applied."
+  },
+  "interpretation_limit": "This package-level evidence addresses the reported location only. It does not erase Scout's finding or imply that the image has no vulnerabilities.",
+  "verification": "docker run --rm --entrypoint python teleguard-api:local -c <read-only package metadata and import-spec check>"
+}

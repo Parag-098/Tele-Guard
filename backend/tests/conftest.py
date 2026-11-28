@@ -1,7 +1,7 @@
 import os
 
 os.environ["TG_DATABASE_URL"] = "sqlite:///./test_teleguard.db"
-os.environ["TG_SECRET_KEY"] = "test-only-secret-key"
+os.environ["TG_SECRET_KEY"] = "test-only-secret-key-at-least-32-bytes"
 import pytest
 from fastapi.testclient import TestClient
 from app.main import app

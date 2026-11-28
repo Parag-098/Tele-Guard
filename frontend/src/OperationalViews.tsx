@@ -2,6 +2,15 @@ import { useEffect, useState } from 'react';
 
 type Props = { api: (path: string, options?: RequestInit) => Promise<any>; token: string; user: { role: string } | null; setError: (message: string) => void; view: 'Data observatory' | 'Live monitoring'; onNavigate: (view: string) => void };
 const API = import.meta.env.VITE_API_URL || 'http://localhost:8000/api';
+function safeUploadError(status: number) {
+  if (status === 401) return 'Your session is invalid or expired. Sign in again.'
+  if (status === 403) return 'You do not have permission to upload events.'
+  if (status === 409) return 'The upload conflicts with existing event IDs. No conflicting batch was accepted.'
+  if (status === 413) return 'The selected file exceeds the upload limit.'
+  if (status === 422) return 'The CSV was rejected. Check its event-v1 fields and allowed values.'
+  if (status >= 500) return 'The upload service is temporarily unavailable. Retry later.'
+  return 'The CSV upload could not be completed.'
+}
 
 export function OperationalViews({ api, token, user, setError, view, onNavigate }: Props) {
   const [data, setData] = useState<any>(null);
@@ -26,7 +35,7 @@ export function OperationalViews({ api, token, user, setError, view, onNavigate 
   }, [job?.id, job?.status]);
   async function seed() { setStarting(true); try { const queued = await api('/datasets/seed', { method: 'POST', body: JSON.stringify({ count: 150000, seed: 20261119 }) }); setJob(await api(`/jobs/${queued.job_id}`)); } catch (e: any) { setError(e.message); } finally { setStarting(false); } }
   async function control(action: string) { if (!job) return; try { await api(`/jobs/${job.id}/control`, { method: 'POST', body: JSON.stringify({ action }) }); setJob(await api(`/jobs/${job.id}`)); } catch (e: any) { setError(e.message); } }
-  async function upload() { if (!file) return; try { const res = await fetch(`${API}/events/upload-csv`, { method: 'POST', headers: { 'Content-Type': 'text/csv', Authorization: `Bearer ${token}` }, body: file }); const result = await res.json(); if (!res.ok) throw Error(result.detail || `Upload failed (${res.status})`); setData(await api('/data/observatory')); setFile(null); } catch (e: any) { setError(e.message); } }
+  async function upload() { if (!file) return; try { let res: Response; try { res = await fetch(`${API}/events/upload-csv`, { method: 'POST', headers: { 'Content-Type': 'text/csv', Authorization: `Bearer ${token}` }, body: file }); } catch { throw Error('The API service cannot be reached. Check connectivity or retry.'); } if (!res.ok) throw Error(safeUploadError(res.status)); setData(await api('/data/observatory')); setFile(null); } catch (e: any) { setError(e instanceof Error ? e.message : 'The CSV upload could not be completed.'); } }
   return <>
     <section className="panel"><div className="panel-head"><div><h2>Operational data and service status</h2><p>Counts and health are read from persisted PostgreSQL and service heartbeat data.</p></div><select aria-label="Operational view" value={view} onChange={e => onNavigate(e.target.value)}><option>Data observatory</option><option>Live monitoring</option></select></div>
       {view === 'Data observatory' && <>

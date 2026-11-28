@@ -1,6 +1,9 @@
 from contextlib import asynccontextmanager
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
+from hashlib import file_digest
+from pathlib import Path
 import csv
 import io
 import os
@@ -10,6 +13,7 @@ from uuid import uuid4
 import re
 import numpy as np
 import joblib
+import jwt
 from sklearn.metrics import (
     average_precision_score,
     confusion_matrix,
@@ -17,11 +21,12 @@ from sklearn.metrics import (
     precision_score,
     recall_score,
 )
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import and_, case, func, select, or_
 from sqlalchemy.orm import Session
 from app.config import settings
+from app.decision_policy import assigned_canary, classifier_threshold, lock_model_release
 from app.db import Base, engine, get_db, SessionLocal
 from app.models import (
     User,
@@ -48,14 +53,25 @@ from app.ml import (
     train_model,
     track_training_run,
     FEATURE_VERSION,
-    FEATURES,
     features,
     explain_prediction,
     model_input,
+    model_feature_columns,
+    model_feature_version,
     FeatureState,
+    event_sort_key,
 )
 from app.synthetic import generate_events
 from app.batch_scoring import BatchScoringState
+from app.investigations import (
+    LegacyLabelRequest, ReviewRequest, _submit_review, attach_prediction, attach_predictions,
+    router as investigation_router,
+)
+from app.investigations import visible_case_filter
+from app.monitoring import allocation, router as monitor_router
+from app.rate_limits import apply_rate_limits
+from app.runtime_models import ServedSnapshot
+from app.simulator import router as simulator_router
 from app.dataset_jobs import (
     MAX_INITIAL_ROWS,
     MIN_INITIAL_ROWS,
@@ -72,8 +88,11 @@ def load_model_run(model_run: ModelRun) -> dict:
     artifact_path = model_run.artifact_path
     if not artifact_path or not artifact_path.endswith(".joblib"):
         raise RuntimeError("Recorded model artifact path is invalid")
+    expected = (model_run.metrics or {}).get("artifact_sha256")
+    path = Path(artifact_path)
     try:
-        return joblib.load(artifact_path)
+        signature = path.stat()
+        return _load_local_artifact(artifact_path, signature.st_mtime_ns, signature.st_size, expected)
     except FileNotFoundError:
         if not model_run.mlflow_run_id:
             raise
@@ -83,14 +102,24 @@ def load_model_run(model_run: ModelRun) -> dict:
         run_id=model_run.mlflow_run_id,
         path=artifact_path.replace("\\", "/").rsplit("/", 1)[-1],
     )
-    return joblib.load(local_path)
+    signature = Path(local_path).stat()
+    return _load_local_artifact(local_path, signature.st_mtime_ns, signature.st_size, expected)
+
+
+@lru_cache(maxsize=8)
+def _load_local_artifact(path, modified_ns, size, digest):
+    if digest:
+        with open(path, "rb") as artifact:
+            if file_digest(artifact, "sha256").hexdigest() != digest:
+                raise ValueError("Model artifact checksum mismatch")
+    return joblib.load(path)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
-    app.state.model = load_model()
     with SessionLocal() as db:
+        lock_model_release(db)
         active = (
             db.query(MLOpsRecord)
             .filter_by(kind="active_model")
@@ -112,6 +141,7 @@ async def lifespan(app: FastAPI):
             if app.state.model.get("version") != active.version:
                 raise RuntimeError(f"Active model artifact version does not match {active.version}")
         else:
+            app.state.model = load_model()
             db.add(
                 MLOpsRecord(
                     kind="active_model",
@@ -138,7 +168,7 @@ async def lifespan(app: FastAPI):
                     artifact_path=app.state.model["artifact_path"],
                 )
             )
-            db.commit()
+        db.commit()
     yield
 
 
@@ -158,6 +188,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.include_router(investigation_router)
+app.include_router(simulator_router)
+app.include_router(monitor_router)
+app.middleware("http")(apply_rate_limits)
 
 
 @app.middleware("http")
@@ -230,25 +264,18 @@ def prediction_dict(p):
     }
 
 
-def score_event(db, event, user, model):
-    active_version = _mlops_state(db)
-    if model.get("version") != active_version:
-        selected_run = db.query(ModelRun).filter_by(version=active_version).first()
-        if not selected_run:
-            raise RuntimeError(f"Active model {active_version} has no persisted model-run record")
-        model = load_model_run(selected_run)
-        if model.get("version") != active_version:
-            raise RuntimeError("Selected champion artifact version does not match PostgreSQL active state")
-        app.state.model = model
+def score_event(db, event, user, model, *, cohort="live", observed_at=None):
+    model = _sync_active_model(db, model)
+    prior_event = or_(Event.event_time < event.event_time,
+                      and_(Event.event_time == event.event_time, Event.event_id < event.event_id))
     prior = (
         db.query(Event)
         .filter(
             Event.subscriber_id == event.subscriber_id,
             Event.id != event.id,
-            Event.event_time <= event.event_time,
+            prior_event,
         )
-        .order_by(Event.event_time.desc())
-        .limit(200)
+        .order_by(Event.event_time, Event.event_id)
         .all()
     )
     shared_entity_filters = []
@@ -256,14 +283,17 @@ def score_event(db, event, user, model):
         shared_entity_filters.append(Event.device_id == event.device_id)
     if event.network_token:
         shared_entity_filters.append(Event.network_token == event.network_token)
+    if event.sim_id:
+        shared_entity_filters.append(Event.sim_id == event.sim_id)
     linked = (
         db.query(Event)
         .filter(
-            Event.event_time <= event.event_time,
+            prior_event,
             Event.subscriber_id != event.subscriber_id,
             or_(*shared_entity_filters),
         )
-        .limit(200)
+        .order_by(Event.event_time.desc(), Event.event_id.desc())
+        .limit(500)
         .all()
         if shared_entity_filters
         else []
@@ -276,8 +306,10 @@ def score_event(db, event, user, model):
     result["risk_score"] = float(np.clip(result["risk_score"] + context_weight * scenario_result["risk_score"], 0, 1))
     result["risk_band"] = "Critical" if result["risk_score"] >= 0.8 else "High" if result["risk_score"] >= 0.6 else "Medium" if result["risk_score"] >= 0.35 else "Low"
     result["evidence"].append({"signal": "location_travel_scenario", "value": scenario_result["risk_score"], "detail": scenario_result["summary"], "findings": scenario_result["findings"]})
-    observations = [(model.get("version", settings.model_version), "champion", result["probability"])]
+    observations = [(model.get("version", settings.model_version), "champion", result["probability"], classifier_threshold(model))]
     serve_config = current_serving_config(db)
+    assigned = assigned_canary(event.subscriber_id, serve_config)
+    actual_role = "champion"
     challenger_version = serve_config.get("challenger_version")
     if serve_config.get("mode") in {"shadow", "canary"} and challenger_version and challenger_version != model.get("version"):
         challenger_row = db.query(ModelRun).filter_by(version=challenger_version).first()
@@ -285,14 +317,14 @@ def score_event(db, event, user, model):
             try:
                 challenger = load_model_run(challenger_row)
                 challenger_result = score(event_row, challenger, context)
-                canary = serve_config.get("mode") == "canary" and (int(event.event_id.encode().hex()[:8], 16) % 100 < int(serve_config.get("canary_percent", 0)))
-                observations.append((challenger_version, "canary" if canary else "shadow", challenger_result["probability"]))
-                if canary:
+                observations.append((challenger_version, "canary" if assigned else "shadow", challenger_result["probability"], classifier_threshold(challenger)))
+                if assigned:
                     result.update(challenger_result)
                     result["risk_score"] = float(np.clip(result["risk_score"] + context_weight * scenario_result["risk_score"], 0, 1))
                     result["risk_band"] = "Critical" if result["risk_score"] >= 0.8 else "High" if result["risk_score"] >= 0.6 else "Medium" if result["risk_score"] >= 0.35 else "Low"
                     result["evidence"].append({"signal": "location_travel_scenario", "value": scenario_result["risk_score"], "detail": scenario_result["summary"], "findings": scenario_result["findings"]})
                     model = challenger
+                    actual_role = "canary"
             except Exception as exc:
                 log(db, "system", "model.challenger_failed", challenger_version, reason=str(exc)[:250], details={"champion_retained": True, "event_id": event.event_id})
     p = Prediction(
@@ -315,19 +347,24 @@ def score_event(db, event, user, model):
     )
     db.add(p)
     db.flush()
-    for version, role, probability in observations:
-        db.add(ModelObservation(prediction_id=p.id, model_version=version, serving_role=role, probability=probability, predicted_label=int(probability >= 0.5)))
-    if p.risk_score >= settings.incident_risk_threshold:
-        db.add(
-            Incident(
-                prediction_id=p.id,
-                subscriber_id=event.subscriber_id,
-                title=f"Elevated synthetic risk — {event.event_type}",
-                severity=p.risk_band,
-            )
-        )
+    for version, role, probability, threshold in observations:
+        db.add(ModelObservation(prediction_id=p.id, model_version=version, serving_role=role, probability=probability, predicted_label=int(probability >= threshold)))
+    persist_serving_snapshot(db, event, p, serve_config, result["monitor_features"],
+                             classifier_threshold(model), actual_role, cohort, observed_at)
+    attach_prediction(db, event, p, user.username)
     log(db, user.username, "event.scored", event.event_id, details={"risk_band": p.risk_band})
     return p
+
+
+def persist_serving_snapshot(db, event, prediction, serving, values, threshold, actual_role,
+                             cohort="live", observed_at=None):
+    db.add(ServedSnapshot(
+        prediction_id=prediction.id, cohort=cohort, event_type=event.event_type,
+        observed_at=observed_at or datetime.now(timezone.utc),
+        release=serving.get("deployment_id"),
+        assigned_role="canary" if assigned_canary(event.subscriber_id, serving) else "champion",
+        actual_role=actual_role, classifier_threshold=threshold, values=values,
+    ))
 
 
 def evaluate_location_scenario(db, row, context):
@@ -388,6 +425,19 @@ def _stop_challenger_serving(db, actor, reason):
 def health(db: Session = Depends(get_db)):
     db.execute(select(1))
     return {"status": "ok", "database": "connected", "contract_version": "event-v1"}
+
+
+@app.get("/api/ready")
+def readiness(db: Session = Depends(get_db)):
+    db.execute(select(1))
+    try:
+        app.state.model = _sync_active_model(db, app.state.model)
+    except Exception as exc:
+        raise HTTPException(503, "Active model is not ready") from exc
+    active = _active_release(db)
+    if not active or app.state.model.get("version") != active.version:
+        raise HTTPException(503, "Active model is not ready")
+    return {"status": "ready", "database": "connected"}
 
 
 @app.get("/api/system/health")
@@ -495,9 +545,7 @@ def me(user: User = Depends(current_user)):
 def logout(
     token: str = Depends(oauth), db: Session = Depends(get_db), user: User = Depends(current_user)
 ):
-    from jose import jwt
-
-    claims = jwt.get_unverified_claims(token)
+    claims = jwt.decode(token, settings.secret_key, algorithms=["HS256"])
     session = (
         db.query(AuthSession).filter_by(token_id=claims.get("jti"), username=user.username).first()
     )
@@ -595,8 +643,10 @@ def update_user(
 def dashboard(db: Session = Depends(get_db), user: User = Depends(current_user)):
     return {
         "events": db.query(Event).count(),
-        "incidents": db.query(Incident).count(),
-        "open_incidents": db.query(Incident).filter(Incident.status.notin_(["Resolved", "False Positive"])).count(),
+        "incidents": db.query(Incident).filter(visible_case_filter()).count(),
+        "open_incidents": db.query(Incident).filter(
+            visible_case_filter(), Incident.status.notin_(["Resolved", "False Positive"])
+        ).count(),
         "high_risk": db.query(Prediction).filter(Prediction.risk_score >= 0.6).count(),
         "avg_risk": db.query(func.avg(Prediction.risk_score)).scalar() or 0,
         "label_monitoring": label_monitoring_summary(db),
@@ -659,7 +709,7 @@ def prediction_explanation(
         model = load_model_run(run)
     except (OSError, ValueError, KeyError) as exc:
         raise HTTPException(503, "The prediction's model artifact cannot be loaded") from exc
-    if model.get("version") != prediction.model_version or model.get("features") != FEATURES:
+    if model.get("version") != prediction.model_version or model_feature_version(model) != prediction.feature_version:
         raise HTTPException(409, "The model artifact version or feature schema does not match this prediction")
 
     prior = (
@@ -679,16 +729,27 @@ def prediction_explanation(
     if background is None:
         dataset = db.query(DemoDataset).filter_by(version=run.dataset_version).first()
         background_rows = dataset.events if dataset else [e.model_dump(mode="json") for e in generate_events(200, 2026)]
-        background = features(background_rows).sample(n=min(100, len(background_rows)), random_state=41).to_numpy()
+        background = features(background_rows)[model_feature_columns(model)].sample(
+            n=min(100, len(background_rows)), random_state=41
+        ).to_numpy()
+    snapshot = db.get(ServedSnapshot, prediction.id)
     try:
         explanation = explain_prediction(
             model,
             event_dict(event),
             [event_dict(row) for row in reversed(prior)],
             background,
+            scored_features=snapshot.values if snapshot else None,
         )
     except (ValueError, TypeError, IndexError) as exc:
         raise HTTPException(422, f"Prediction explanation is unavailable: {exc}") from exc
+    expected = explanation["predicted_value"]
+    if explanation["output_scale"] == "fraud_log_odds":
+        from scipy.special import expit
+
+        expected = float(expit(expected))
+    if not np.isclose(prediction.probability, expected, rtol=1e-5, atol=1e-6):
+        raise HTTPException(409, "The reconstructed features do not reproduce the saved probability")
     explanation["event_id"] = event_id
     explanation["prediction_id"] = prediction.id
     explanation["supervised_probability"] = prediction.probability
@@ -710,21 +771,42 @@ def ingest(
     db: Session = Depends(get_db),
     user: User = Depends(allow("Administrator", "Fraud Analyst", "Investigator", "ML Engineer")),
 ):
+    if db.bind.dialect.name == "postgresql":
+        from sqlalchemy import text
+
+        db.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:event_id, 0))"),
+                   {"event_id": data.event_id})
+    e, p, duplicate = ingest_event(db, data, user, app.state.model)
+    db.commit()
+    return {"event": event_dict(e), "prediction": prediction_dict(p) if p else None, "duplicate": duplicate}
+
+
+def ingest_event(db, data, actor, model, *, cohort="live", observed_at=None):
     exists = db.query(Event).filter_by(event_id=data.event_id).first()
     if exists:
+        if not _event_payload_matches(exists, data):
+            raise HTTPException(409, "Event ID already exists with different immutable event content")
         p = db.query(Prediction).filter_by(event_id=data.event_id).first()
-        return {
-            "event": event_dict(exists),
-            "prediction": prediction_dict(p) if p else None,
-            "duplicate": True,
-        }
+        return exists, p, True
     fields = data.model_dump(exclude={"contract_version", "fraud_label"})
     e = Event(**fields, fraud_label=data.fraud_label)
     db.add(e)
     db.flush()
-    p = score_event(db, e, user, app.state.model)
-    db.commit()
-    return {"event": event_dict(e), "prediction": prediction_dict(p), "duplicate": False}
+    p = score_event(db, e, actor, model, cohort=cohort, observed_at=observed_at)
+    return e, p, False
+
+
+def _event_payload_matches(existing: Event, incoming: EventIn) -> bool:
+    """Treat exact retries as idempotent and reject an ID reused for new content."""
+    values = incoming.model_dump(exclude={"contract_version"})
+    for field, value in values.items():
+        stored = getattr(existing, field)
+        if field == "event_time":
+            stored = stored.replace(tzinfo=timezone.utc) if stored.tzinfo is None else stored.astimezone(timezone.utc)
+            value = value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+        if stored != value:
+            return False
+    return True
 
 
 @app.post("/api/events/upload-csv", status_code=201)
@@ -780,26 +862,34 @@ async def upload_events_csv(
     except (UnicodeDecodeError, csv.Error, ValueError, TypeError) as exc:
         raise HTTPException(422, f"Invalid CSV: {exc}") from exc
 
-    validated.sort(key=lambda event: event.event_time)
+    validated.sort(key=lambda event: (event.event_time, event.event_id))
     identifiers = [event.event_id for event in validated]
     if len(set(identifiers)) != len(identifiers):
         raise HTTPException(422, "CSV contains duplicate event_id values")
-    existing_ids = {event_id for (event_id,) in db.query(Event.event_id).filter(Event.event_id.in_(identifiers)).all()}
+    if db.bind.dialect.name == "postgresql":
+        from sqlalchemy import text
+
+        for event_id in sorted(identifiers):
+            db.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:event_id, 0))"),
+                       {"event_id": event_id})
+    existing_events = {
+        event.event_id: event
+        for event in db.query(Event).filter(Event.event_id.in_(identifiers)).all()
+    }
+    for incoming in validated:
+        prior = existing_events.get(incoming.event_id)
+        if prior is not None and not _event_payload_matches(prior, incoming):
+            raise HTTPException(409, "Event ID already exists with different immutable event content")
+    existing_ids = set(existing_events)
     new_events = [event for event in validated if event.event_id not in existing_ids]
     if not new_events:
         return {"created": 0, "duplicates": len(validated), "predictions": 0}
 
     max_time = max(event.event_time for event in new_events)
     subscriber_ids = {event.subscriber_id for event in new_events}
-    ranked = (
-        db.query(
-            Event.id.label("event_pk"),
-            func.row_number().over(partition_by=Event.subscriber_id, order_by=Event.event_time.desc()).label("position"),
-        )
-        .filter(Event.subscriber_id.in_(subscriber_ids), Event.event_time <= max_time)
-        .subquery()
-    )
-    context_rows = db.query(Event).join(ranked, Event.id == ranked.c.event_pk).filter(ranked.c.position <= 200).all()
+    context_rows = db.query(Event).filter(
+        Event.subscriber_id.in_(subscriber_ids), Event.event_time <= max_time,
+    ).all()
     related_filters = [
         getattr(Event, field).in_({event.model_dump().get(field) for event in new_events if event.model_dump().get(field)})
         for field in ("device_id", "network_token", "sim_id")
@@ -816,7 +906,7 @@ async def upload_events_csv(
     rows = [event.model_dump(mode="json", exclude={"contract_version"}) for event in new_events]
     new_ids = {event.event_id for event in new_events}
     combined = context + rows
-    ordered = sorted(enumerate(combined), key=lambda item: (item[1]["event_time"], item[0]))
+    ordered = sorted(enumerate(combined), key=lambda item: event_sort_key(item[1]))
     ordered_rows = [row for _, row in ordered]
     feature_state = FeatureState()
     combined_features = feature_state.transform(ordered_rows)
@@ -825,7 +915,6 @@ async def upload_events_csv(
     new_features = combined_features.iloc[new_positions].reset_index(drop=True)
 
     state = BatchScoringState()
-    state.seed_context(context)
     active_version = _mlops_state(db)
     active_row = db.query(ModelRun).filter_by(version=active_version).first()
     champion = load_model_run(active_row) if active_row else app.state.model
@@ -841,8 +930,8 @@ async def upload_events_csv(
             except Exception as exc:
                 log(db, "system", "model.challenger_failed", candidate.version,
                     reason=str(exc)[:250], details={"champion_retained": True, "csv_upload": True})
-                serving = {"mode": "champion"}
-    scored = state.score(new_rows_ordered, new_features, champion, challenger, serving, current_scenario_config(db))
+    scored = state.score(new_rows_ordered, new_features, champion, challenger, serving,
+                         current_scenario_config(db), context=context)
 
     event_objects = []
     for event in new_events:
@@ -865,20 +954,18 @@ async def upload_events_csv(
         ModelObservation(
             prediction_id=prediction_by_event[result["event_id"]].id,
             model_version=model_version, serving_role=role, probability=probability,
-            predicted_label=int(probability >= 0.5),
+            predicted_label=int(probability >= threshold),
         )
-        for result in scored for model_version, role, probability in result["observations"]
+        for result in scored for model_version, role, probability, threshold in result["observations"]
     ])
     event_by_id = {event.event_id: event for event in event_objects}
-    db.add_all([
-        Incident(
-            prediction_id=prediction_by_event[result["event_id"]].id,
-            subscriber_id=event_by_id[result["event_id"]].subscriber_id,
-            title=f"Elevated synthetic risk — {event_by_id[result['event_id']].event_type}",
-            severity=result["risk_band"],
-        )
-        for result in scored if result["risk_score"] >= settings.incident_risk_threshold
-    ])
+    for result in scored:
+        event = event_by_id[result["event_id"]]
+        prediction = prediction_by_event[result["event_id"]]
+        observation = next(item for item in result["observations"] if item[0] == prediction.model_version)
+        persist_serving_snapshot(db, event, prediction, serving, result["monitor_features"],
+                                 observation[3], observation[1], "csv")
+    attach_predictions(db, [(event_by_id[p.event_id], p) for p in prediction_objects], user.username)
     log(db, user.username, "event.csv_batch_ingested", f"rows:{len(new_events)}",
         details={"created": len(new_events), "duplicates": len(validated) - len(new_events)})
     db.commit()
@@ -893,7 +980,10 @@ def generate(
     user: User = Depends(allow("Administrator", "Fraud Analyst", "Investigator", "ML Engineer")),
 ):
     try:
-        generated = generate_events(int(body.get("count", 140)), int(body.get("seed", 42)))
+        count = int(body.get("count", 140))
+        if not 1 <= count <= 5000:
+            raise ValueError("Generate 1–5000 events for a synchronous scenario; use a dataset job for larger runs")
+        generated = generate_events(count, int(body.get("seed", 42)))
     except (ValueError, TypeError) as exc:
         raise HTTPException(422, str(exc))
     created = 0
@@ -904,7 +994,7 @@ def generate(
         e = Event(**values, fraud_label=item.fraud_label)
         db.add(e)
         db.flush()
-        score_event(db, e, user, app.state.model)
+        score_event(db, e, user, app.state.model, cohort="legacy_demo")
         created += 1
     log(
         db,
@@ -932,7 +1022,7 @@ def incidents(
     db: Session = Depends(get_db),
     user: User = Depends(current_user),
 ):
-    query = db.query(Incident)
+    query = db.query(Incident).filter(visible_case_filter())
     if status:
         query = query.filter_by(status=status)
     if severity:
@@ -1217,6 +1307,21 @@ def _mlops_state(db: Session):
     return active.version if active else app.state.model.get("version")
 
 
+def _sync_active_model(db: Session, model: dict) -> dict:
+    """Refresh this API process after another worker commits a model release."""
+    active_version = _mlops_state(db)
+    if model.get("version") == active_version:
+        return model
+    selected_run = db.query(ModelRun).filter_by(version=active_version).first()
+    if not selected_run:
+        raise RuntimeError(f"Active model {active_version} has no persisted model-run record")
+    refreshed = load_model_run(selected_run)
+    if refreshed.get("version") != active_version:
+        raise RuntimeError("Selected champion artifact version does not match PostgreSQL active state")
+    app.state.model = refreshed
+    return refreshed
+
+
 @app.get("/api/mlops")
 def mlops_summary(db: Session = Depends(get_db), user: User = Depends(current_user)):
     registry_versions = []
@@ -1238,9 +1343,11 @@ def mlops_summary(db: Session = Depends(get_db), user: User = Depends(current_us
     except Exception:
         # The API remains usable when the optional tracking service is unavailable.
         registry_available = False
+    serving = current_serving_config(db)
     return {
         "active_model": _mlops_state(db),
-        "serving_config": current_serving_config(db),
+        "serving_config": serving,
+        "canary_allocation": allocation(db, serving),
         "scenario_config": current_scenario_config(db),
         "label_monitoring": label_monitoring_summary(db),
         "mlflow_registry_available": registry_available,
@@ -1286,7 +1393,8 @@ def mlops_summary(db: Session = Depends(get_db), user: User = Depends(current_us
             {
                 "id": j.id, "kind": j.kind, "status": j.status,
                 "progress_current": j.progress_current, "progress_total": j.progress_total,
-                "result": j.result, "error": j.error,
+                "result": j.result,
+                "error": "Job failed. Contact an administrator with the job ID to review operational logs." if j.error else None,
                 "requested_by": j.requested_by, "created_at": j.created_at.isoformat(),
                 "updated_at": j.updated_at.isoformat(),
             }
@@ -1341,6 +1449,26 @@ def seed_initial_dataset(
             "maximum_rows": MAX_INITIAL_ROWS}
 
 
+@app.post("/api/datasets/research-training", status_code=status.HTTP_202_ACCEPTED)
+def start_research_training(body: dict, db: Session = Depends(get_db),
+                            user: User = Depends(allow("Administrator", "ML Engineer"))):
+    seed = body.get("seed", 20261128)
+    if type(seed) is not int or not 0 <= seed < 2**32:
+        raise HTTPException(422, "Seed must be an unsigned 32-bit integer")
+    lock_model_release(db)
+    job = db.scalar(select(MLOpsJob).where(
+        MLOpsJob.kind == "research_training",
+        MLOpsJob.status.in_(["queued", "running"]),
+    ).limit(1))
+    if job:
+        if job.arguments["seed"] != seed:
+            raise HTTPException(409, "A research training job is already active")
+    else:
+        job = queue_job(db, "research_training", user.username, {"seed": seed, "count": 5})
+        db.commit()
+    return {"job_id": job.id, "status": job.status}
+
+
 @app.get("/api/jobs/{job_id}")
 def get_job(job_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
     job = db.get(MLOpsJob, job_id)
@@ -1349,7 +1477,8 @@ def get_job(job_id: str, db: Session = Depends(get_db), user: User = Depends(cur
     return {
         "id": job.id, "kind": job.kind, "status": job.status,
         "progress_current": job.progress_current, "progress_total": job.progress_total,
-        "result": job.result, "error": job.error,
+        "result": job.result,
+        "error": "Job failed. Contact an administrator with the job ID to review operational logs." if job.error else None,
         "created_at": job.created_at.isoformat(),
         "started_at": job.started_at.isoformat() if job.started_at else None,
         "updated_at": job.updated_at.isoformat(),
@@ -1362,9 +1491,16 @@ def control_job(
     job_id: str, body: JobControlIn, db: Session = Depends(get_db),
     user: User = Depends(current_user),
 ):
-    job = db.get(MLOpsJob, job_id)
-    if not job or (job.requested_by != user.username and user.role != "Administrator"):
+    job = db.scalar(select(MLOpsJob).where(MLOpsJob.id == job_id).with_for_update())
+    training_operator = user.role == "ML Engineer" and job and job.kind.startswith("retrain_")
+    if not job or (job.requested_by != user.username and user.role != "Administrator" and not training_operator):
         raise HTTPException(404, "Job not found")
+    stage = (job.result or {}).get("stage")
+    if body.action == "stop" and stage in {"publishing", "registered"}:
+        raise HTTPException(409, "A candidate in the publishing stage must be reconciled before it can be stopped")
+    if job.kind != "seed_dataset" and job.status == "running":
+        if body.action != "stop" or stage not in {"validating_inputs", "fitting_and_evaluating"}:
+            raise HTTPException(409, "A running fit can only be stopped before registry publication")
     if (job.status == "running" and job.progress_total > 0
             and job.progress_current >= job.progress_total and body.action in {"pause", "stop"}):
         raise HTTPException(409, "Dataset generation is complete; model training and registration are not interruptible")
@@ -1457,40 +1593,39 @@ def _observation_rates(rows):
 
 
 @app.post("/api/predictions/{event_id}/label")
-def ingest_delayed_label(event_id: str, body: dict, db: Session = Depends(get_db), user: User = Depends(allow("Administrator", "Fraud Analyst", "Investigator", "ML Engineer"))):
-    label = body.get("label")
-    source = str(body.get("source", "analyst"))[:80]
-    if label not in (0, 1):
-        raise HTTPException(422, "label must be 0 or 1")
+def ingest_delayed_label(event_id: str, body: LegacyLabelRequest, db: Session = Depends(get_db), user: User = Depends(allow("Administrator", "Fraud Analyst", "Investigator"))):
+    label = body.label
     prediction = db.query(Prediction).with_for_update().join(Event, Prediction.event_id == Event.event_id).filter(Event.event_id == event_id).first()
     if not prediction:
         raise HTTPException(404, "Prediction not found")
-    if prediction.ground_truth_label is not None:
-        raise HTTPException(409, "A ground-truth label is already recorded; labels are immutable")
-    prediction.ground_truth_label = label
-    prediction.label_source = source
-    prediction.label_received_at = datetime.now(timezone.utc)
-    for observation in db.query(ModelObservation).filter_by(prediction_id=prediction.id).all():
-        observation.outcome_label = label
-        observation.evaluated_at = prediction.label_received_at
-    log(db, user.username, "prediction.label_received", event_id, details={"label": label, "source": source, "observations_evaluated": len(db.query(ModelObservation).filter_by(prediction_id=prediction.id).all())})
-    db.commit()
-    return {"event_id": event_id, "label": label, "status": "evaluated", "monitoring": label_monitoring_summary(db)}
+    review = _submit_review(
+        db,
+        ReviewRequest(
+            outcome="confirmed_fraud" if label == 1 else "legitimate",
+            reason=body.reason, correction_of=body.correction_of, request_id=body.request_id,
+        ),
+        user, prediction=prediction,
+    )
+    accepted_label = prediction.ground_truth_label
+    return {"event_id": event_id, "label": accepted_label,
+            "status": "evaluated" if accepted_label is not None else "excluded_conflict",
+            "adjudication_id": review.id, "monitoring": label_monitoring_summary(db)}
 
 
 @app.post("/api/mlops/serving")
 def configure_serving(body: dict, db: Session = Depends(get_db), user: User = Depends(allow("Administrator"))):
+    lock_model_release(db)
     mode = body.get("mode")
     version = body.get("challenger_version")
     percent = body.get("canary_percent", 0)
-    if mode not in {"champion", "shadow", "canary"} or not isinstance(percent, int) or not 0 <= percent <= 100:
+    if mode not in {"champion", "shadow", "canary"} or type(percent) is not int or not 0 <= percent <= 100:
         raise HTTPException(422, "mode must be champion, shadow or canary and canary_percent must be 0..100")
     if mode in {"shadow", "canary"}:
         candidate = db.query(ModelRun).filter_by(version=version).first()
         if not candidate or version == _mlops_state(db):
             raise HTTPException(422, "A persisted non-champion challenger_version is required")
-        comparison = next((row for row in db.query(MLOpsRecord).filter_by(kind="comparison").order_by(MLOpsRecord.id.desc()).all() if row.payload.get("challenger_version") == version), None)
-        if not comparison or comparison.payload.get("champion_version") != _mlops_state(db) or not comparison.payload.get("passed"):
+        comparison = _current_comparison(db, version)
+        if not comparison or not comparison.payload.get("passed"):
             raise HTTPException(409, "Compare this challenger against the current champion and pass promotion gates before shadow/canary serving")
         try:
             loaded = load_model_run(candidate)
@@ -1499,7 +1634,10 @@ def configure_serving(body: dict, db: Session = Depends(get_db), user: User = De
         except Exception as exc:
             raise HTTPException(422, "Challenger artifact failed validation; serving configuration unchanged") from exc
     config = {"mode": mode, "challenger_version": version if mode in {"shadow", "canary"} else None, "canary_percent": percent if mode == "canary" else 0}
-    _record(db, "serving_config", f"serving-{uuid4().hex[:12]}", config, user.username)
+    if mode != "champion":
+        config["experiment_id"] = comparison.version
+    config["deployment_id"] = f"serving-{uuid4().hex[:12]}"
+    _record(db, "serving_config", config["deployment_id"], config, user.username)
     log(db, user.username, "model.serving_configured", config["challenger_version"] or _mlops_state(db), details=config)
     db.commit()
     return config
@@ -1704,6 +1842,7 @@ def detect_drift(
 @app.post("/api/mlops/retrain")
 def mlops_retrain(
     body: dict,
+    response: Response,
     db: Session = Depends(get_db),
     user: User = Depends(allow("Administrator", "ML Engineer")),
 ):
@@ -1715,8 +1854,21 @@ def mlops_retrain(
             raise HTTPException(404, "Training dataset not found")
         if versioned.status != "ready":
             raise HTTPException(409, "Operational dataset must be ready before retraining")
-        training_rows = _operational_training_rows(db, versioned.version)
-        selected_version = versioned.version
+        if versioned.metadata_json.get("manifest"):
+            raise HTTPException(409, "Use research training for manifest-backed datasets")
+        lock_model_release(db)
+        job = db.scalar(select(MLOpsJob).where(
+            MLOpsJob.kind == "retrain_version", MLOpsJob.status.in_(["queued", "running"]),
+            MLOpsJob.arguments["dataset_version"].as_string() == versioned.version,
+        ).limit(1))
+        if not job:
+            job = queue_job(db, "retrain_version", user.username, {
+                "dataset_version": versioned.version, "count": 5,
+                "reason": str(body.get("reason", "manual retraining"))[:240],
+            })
+            db.commit()
+        response.status_code = status.HTTP_202_ACCEPTED
+        return {"job_id": job.id, "status": job.status, "dataset_version": versioned.version}
     else:
         training_rows = dataset.events
         selected_version = dataset.version
@@ -1770,14 +1922,19 @@ def mlops_retrain(
     }
 
 
-def _evaluate(model, events, threshold=0.30):
-    ordered = sorted(events, key=lambda e: e["event_time"])
+def _evaluate(model, events, threshold=None, *, independent=False):
+    threshold = classifier_threshold(model) if threshold is None else threshold
+    ordered = sorted(events, key=event_sort_key)
     # Match train_model: validation rows may be used for fitting, but its final
     # chronological 15% test segment must stay untouched for both contestants.
-    cut = int(len(ordered) * 0.85)
+    cut = 0 if independent else int(len(ordered) * 0.85)
     holdout = ordered[cut:]
     X = model_input(model, features(ordered).iloc[cut:])
-    y = np.asarray([int(e.get("fraud_label") or 0) for e in holdout])
+    if any(e.get("fraud_label") not in (0, 1) for e in holdout):
+        raise HTTPException(409, "Holdout contains unverified labels")
+    y = np.asarray([int(e["fraud_label"]) for e in holdout])
+    if len(set(y)) != 2:
+        raise HTTPException(409, "Holdout must contain both classes")
     p = model["model"].predict_proba(X)[:, 1]
     pred = (p >= threshold).astype(int)
     tn, fp, fn, tp = confusion_matrix(y, pred, labels=[0, 1]).ravel()
@@ -1815,6 +1972,24 @@ def _operational_training_rows(db: Session, dataset_version: str):
     return rows
 
 
+def _independent_evaluation_rows(db, dataset):
+    from pathlib import Path
+    from app.dataset_manifest import iter_records, load_manifest
+
+    version = dataset.metadata_json.get("evaluation_versions", {}).get("independent")
+    evaluation = db.get(DatasetVersion, version) if version else None
+    if not evaluation:
+        raise HTTPException(409, "Immutable independent evaluation dataset is missing")
+    path = Path(evaluation.metadata_json["manifest"])
+    manifest = load_manifest(path, verify_parts=True)
+    if manifest["manifest_sha256"] != evaluation.metadata_json["manifest_sha256"]:
+        raise HTTPException(409, "Independent evaluation manifest failed validation")
+    return [
+        {**record.event.model_dump(mode="json"), "fraud_label": record.outcome.label}
+        for _, record in iter_records(path, manifest)
+    ], evaluation.version
+
+
 @app.post("/api/mlops/compare")
 def mlops_compare(
     body: dict,
@@ -1828,17 +2003,27 @@ def mlops_compare(
         raise HTTPException(404, "Candidate or its evaluation dataset is missing")
     if versioned and versioned.status != "ready":
         raise HTTPException(409, "Operational evaluation dataset is not ready")
-    active_version = _mlops_state(db)
+    active_release = _active_release(db)
+    if not active_release:
+        raise HTTPException(409, "Active champion metadata is missing")
+    active_version = active_release.version
+    if challenger.version == active_version:
+        raise HTTPException(422, "Comparison requires a non-champion candidate")
     champion_row = db.query(ModelRun).filter_by(version=active_version).first()
     if not champion_row:
         raise HTTPException(409, "Active champion metadata is missing")
     champion = load_model_run(champion_row)
     challenger_model = load_model_run(challenger)
-    evaluation_events = dataset.events if dataset else _operational_training_rows(db, versioned.version)
+    independent = bool(versioned and versioned.kind == "development")
+    if independent:
+        evaluation_events, evaluated_version = _independent_evaluation_rows(db, versioned)
+    else:
+        evaluated_version = dataset.version if dataset else versioned.version
+        evaluation_events = dataset.events if dataset else _operational_training_rows(db, versioned.version)
     if len(evaluation_events) < 10:
         raise HTTPException(409, "Evaluation dataset has too few labeled events")
-    champion_metrics = _evaluate(champion, evaluation_events)
-    challenger_metrics = _evaluate(challenger_model, evaluation_events)
+    champion_metrics = _evaluate(champion, evaluation_events, independent=independent)
+    challenger_metrics = _evaluate(challenger_model, evaluation_events, independent=independent)
     passed = (
         challenger_metrics["pr_auc"] >= champion_metrics["pr_auc"] - 0.02
         and challenger_metrics["recall"] >= champion_metrics["recall"] - 0.03
@@ -1847,8 +2032,9 @@ def mlops_compare(
     )
     payload = {
         "champion_version": active_version,
+        "champion_release_id": active_release.id,
         "challenger_version": challenger.version,
-        "dataset_version": dataset.version if dataset else versioned.version,
+        "dataset_version": evaluated_version,
         "champion": champion_metrics,
         "challenger": challenger_metrics,
         "gates": {
@@ -1860,12 +2046,40 @@ def mlops_compare(
             <= champion_metrics["false_positive_rate"] + 0.03,
         },
         "passed": passed,
-        "policy": "same untouched chronological 15% test holdout after 70/15/15 train/validation/test; threshold=0.30; PR-AUC, recall and false-positive gates",
+        "risk_policy_version": settings.risk_policy_version,
+        "classification_threshold": settings.classification_threshold,
+        "policy": ("same independent evaluation set" if independent else "same chronological 15% holdout")
+        + "; per-artifact classifier threshold; PR-AUC, recall and false-positive gates",
     }
     comparison_id = f"comparison-{uuid4().hex[:10]}"
     _record(db, "comparison", comparison_id, payload, user.username)
     db.commit()
     return {"version": comparison_id, **payload}
+
+
+def _active_release(db):
+    return db.query(MLOpsRecord).filter_by(kind="active_model").order_by(MLOpsRecord.id.desc()).first()
+
+
+def _current_comparison(db, candidate_version):
+    active = _active_release(db)
+    if not active:
+        return None
+    comparison = (
+        db.query(MLOpsRecord)
+        .filter(MLOpsRecord.kind == "comparison",
+                MLOpsRecord.payload["challenger_version"].as_string() == candidate_version)
+        .order_by(MLOpsRecord.id.desc())
+        .first()
+    )
+    if comparison:
+        evidence = comparison.payload
+        if (evidence.get("champion_release_id") == active.id
+                and evidence.get("champion_version") == active.version
+                and evidence.get("risk_policy_version") == settings.risk_policy_version
+                and evidence.get("classification_threshold") == settings.classification_threshold):
+            return comparison
+    return None
 
 
 @app.post("/api/mlops/decisions/{candidate_version}")
@@ -1875,14 +2089,13 @@ def mlops_decision(
     db: Session = Depends(get_db),
     user: User = Depends(allow("Administrator")),
 ):
+    lock_model_release(db)
     action_name = body.get("decision")
     candidate = db.query(ModelRun).filter_by(version=candidate_version).first()
     if action_name not in {"approve", "reject"} or not candidate:
         raise HTTPException(422, "A valid candidate and approve/reject decision are required")
-    comparison = (
-        db.query(MLOpsRecord).filter_by(kind="comparison").order_by(MLOpsRecord.id.desc()).first()
-    )
-    if not comparison or comparison.payload.get("challenger_version") != candidate_version:
+    comparison = _current_comparison(db, candidate_version)
+    if not comparison:
         raise HTTPException(409, "Compare this challenger against the current champion first")
     if action_name == "approve" and not comparison.payload.get("passed"):
         raise HTTPException(409, "Promotion gates failed; the champion remains active")
@@ -1899,7 +2112,11 @@ def mlops_decision(
         },
         user.username,
     )
+    promoted_model = None
     if action_name == "approve":
+        promoted_model = load_model_run(candidate)
+        if promoted_model.get("version") != candidate_version:
+            raise HTTPException(409, "Candidate artifact version mismatch")
         _record(
             db,
             "active_model",
@@ -1907,7 +2124,6 @@ def mlops_decision(
             {"reason": "administrator-approved promotion"},
             user.username,
         )
-        app.state.model = load_model_run(candidate)
         _stop_challenger_serving(db, user.username, "champion promotion")
     elif current_serving_config(db).get("challenger_version") == candidate_version:
         _stop_challenger_serving(db, user.username, "challenger rejected")
@@ -1920,6 +2136,8 @@ def mlops_decision(
         details={"comparison": comparison.version},
     )
     db.commit()
+    if promoted_model is not None:
+        app.state.model = promoted_model
     return {"decision": action_name, "active_model": _mlops_state(db), "version": candidate_version}
 
 
@@ -1927,6 +2145,7 @@ def mlops_decision(
 def mlops_rollback(
     body: dict, db: Session = Depends(get_db), user: User = Depends(allow("Administrator"))
 ):
+    lock_model_release(db)
     version = body.get("version")
     approved = db.query(MLOpsRecord).filter_by(kind="approved_model", version=version).first()
     model_row = db.query(ModelRun).filter_by(version=version).first()
@@ -1940,6 +2159,8 @@ def mlops_rollback(
         user.username,
     )
     restored_model = load_model_run(model_row)
+    if restored_model.get("version") != version:
+        raise HTTPException(409, "Rollback artifact version mismatch")
     _stop_challenger_serving(db, user.username, "champion rollback")
     log(db, user.username, "model.rollback", version, reason=body.get("reason"))
     db.commit()

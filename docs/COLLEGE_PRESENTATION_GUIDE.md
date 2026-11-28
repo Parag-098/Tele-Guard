@@ -1,5 +1,7 @@
 # TeleGuard AI college presentation guide
 
+> The existing presentation script documents the verified local baseline. The [incremental release demonstration](#incremental-release-demonstration) defines the longer, evidence-backed run after implementation. Hardware/runtime settings remain to be measured.
+
 ## Project overview and problem
 
 TeleGuard AI is an educational telecom fraud investigation simulation. It demonstrates how synthetic call, SIM, device, network, location, and account-activity events can be scored and investigated. Scores are risk signals for human review, not proof of fraud. The project does not connect to carriers, read private communications/GPS, or block real subscribers.
@@ -71,3 +73,24 @@ Follow [MLOPS_DEMO_GUIDE.md](MLOPS_DEMO_GUIDE.md) for exact commands and recover
 **Does an auditor have write access?** No. The backend checks roles for incident changes, simulated actions, training, promotion, and rollback; hiding controls in the UI is not the security boundary.
 
 **Can this block subscribers?** No. Response actions are synthetic, reversible audit records. No carrier integration or real subscriber restriction exists.
+
+## Incremental release demonstration
+
+Use two isolated demo scopes, one accelerated replay for live monitoring and fast training, and the independently persisted full-volume datasets and evaluation evidence for academic verification. Prepare reproducible configuration, seed, role fixtures, approved starting champion and expected state transitions. Use the same worker and monitoring code paths in both scopes. Precompute no displayed results for the live run. Keep clean and fault cases pinned to separate repeatable replay IDs. Set logical window size, minimum support, lag and delay explicitly. Measure and record the real wall-clock run before choosing what fits the presentation, and emphasize when a model run is historical.
+
+1. Start exact integrated Compose images and capture authenticated readiness. Sign in as an Administrator and show a restricted role side by side.
+2. Open Data Observatory. Demonstrate >100,000 actual training rows, the preserved 150,000 events, independent version IDs/checksums/split and count evidence, and the MLflow-linked champion with test set, thresholds and limitations.
+3. Start the live virtual network. Show rate, observed ingestion, real predictions and event/simulator IDs. Pause/resume once and verify counters. Open a correlated case, show a timeline, a legitimate lookalike and SHAP tied to the saved model/schema. Demonstrate audited reversible synthetic response and adjudication.
+4. Run clean reference, then inject one controlled evolving scenario. Show the same inference path for both. Wait for actual scheduled windows, report data shift and quality separately, and show a late label joins only after availability. Prove supported degradation from linked observations and inspect label coverage.
+5. Observe an automatic worker trigger, stages, MLflow run and candidate evidence. Use a reproducible intentionally weak candidate configuration or degraded eligible fixture, label the negative-control experiment, and demonstrate failed gate and unchanged champion. For the candidate that passes, inspect its actual evaluation and administrator decision.
+6. Start shadow and verify unchanged primary output and paired observations. Authorize a canary against fresh evidence, verify configured versus assigned versus actually served allocation with denominators, and check release health. Complete authorized promotion, observe predictions attributed to it, then roll back to the last approved model and verify subsequent predictions.
+7. Restart the disposable worker/API while preserving volumes. Recover a checkpoint and active model, restore a backup into separate storage, and verify count and approved artifact with a fixed prediction. Use previously captured recovery evidence when presentation duration excludes a full restore, and rerun the drill before signing release acceptance.
+8. Show exact revision/image and CI runs, production topology and explicitly labeled AWS readiness. After authorized hosting, repeat user flow, role checks, artifact recovery and CloudWatch alert evidence on live HTTPS. Mark any unrun step pending.
+
+**Evidence to retain:** run/source IDs with logical time schedule, manifest counts and checksums, model and release revisions, monitor and retraining job IDs, MLflow results, role/test output, actual traffic denominators, skipped or failed steps, and restore results. Simulated exposures and synthetic performance must be labeled as such. See the [E-14 and E-15 criteria](TESTING_AND_TRACEABILITY.md#requirement-to-test-matrix).
+
+## Completed local lifecycle evidence — 2026-11-28
+
+The current bounded synthetic run is recorded in [integrated lifecycle evidence](evidence/integrated-lifecycle-2026-11-28.json), [paired impact report](evidence/incident-impact-2026-11-28.json), and [production-shape smoke](evidence/release-smoke-2026-11-28.json). It preserves the 150,000-row operational dataset, validated 300,000-row research manifest and 209,285 eligible training rows. The persisted simulator completed 1,000 ticks (997 scored / 3 quarantined); monitoring distinguished feature shift from supported predictive degradation. A separately supported delayed-label cohort triggered a 480-label frozen snapshot and durable retraining job; MLflow registration occurred without automatic promotion. Candidate comparison used 22,500 chronological holdout rows and passed documented gates; an authenticated administrator approved the candidate, observed shadow/canary serving (1,371 of 7,200; 19.04%; zero fallback), then rolled back to the previous champion. Analyst adjudication and resolution time were persisted. Service restart, backup checksum and offline isolated restore were verified.
+
+For presentation, show the negative-label/uncertainty and failed-gate path before the qualified candidate; do not use fabricated labels, manually set metrics, promise automatic promotion, or represent the synthetic 99.9998% PR-AUC as real-world performance. Latest 10,000-event impact includes 31 missed synthetic episodes and 4,052 unlabeled correlated cases; display those limitations. Exact-image scanning remains an E-13 open item, and no AWS/hosted-GitHub steps have been run.

@@ -1,0 +1,10 @@
+region = "ap-south-1"
+availability_zone = "ap-south-1a"
+ami_id = "ami-00000000000000000"
+github_repository = "YOUR_OWNER/YOUR_REPOSITORY"
+# github_oidc_provider_arn = "arn:aws:iam::123456789012:oidc-provider/token.actions.githubusercontent.com"
+compose_version = "v2.39.4"
+compose_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+operations_email = "owner@example.com"
+# Illustrative alert threshold only; choose it above expected variable usage too.
+monthly_budget_usd = 100

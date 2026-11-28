@@ -1,0 +1,37 @@
+x-smoke-logs: &smoke-logs
+  driver: json-file
+  options: !reset {}
+
+services:
+  db:
+    logging: *smoke-logs
+  mlflow:
+    logging: *smoke-logs
+    command:
+      - mlflow
+      - server
+      - --host
+      - 0.0.0.0
+      - --port
+      - "5000"
+      - --allowed-hosts
+      - mlflow:5000,localhost:*
+      - --backend-store-uri
+      - ${MLFLOW_BACKEND_STORE_URI:?}
+      - --serve-artifacts
+      - --artifacts-destination
+      - /mlartifacts
+    volumes:
+      - ./deploy-state/mlartifacts:/mlartifacts
+  api:
+    logging: *smoke-logs
+  worker:
+    logging: *smoke-logs
+  web:
+    logging: *smoke-logs
+  proxy:
+    logging: *smoke-logs
+    ports: !override
+      - "127.0.0.1::80"
+    volumes:
+      - ./deploy/Caddyfile.smoke:/etc/caddy/Caddyfile:ro

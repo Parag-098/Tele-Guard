@@ -26,8 +26,12 @@ npm audit --audit-level=high
 npm run build
 Set-Location ..
 $env:POSTGRES_PASSWORD = 'local-ci-password'
-$env:TG_SECRET_KEY = 'local-ci-secret'
+$env:TG_SECRET_KEY = 'local-ci-secret-key-at-least-32-bytes'
 docker compose config --quiet
 docker compose build api web
 docker compose --env-file .env.production.example -f docker-compose.prod.yml config --quiet
 ```
+
+## Incremental release gates
+
+The current workflow is a baseline. Add an exact-image PostgreSQL/Playwright smoke and preserved-version migration test before shipping. Include application/worker readiness and verified model artifact, preserve a versioned release manifest for host files plus images, and validate IaC offline in CI. Keep the production environment guarded and record hosted Actions, ECR and SSM results only from authorized runs. See the [incremental AWS gates](../../docs/AWS_DEPLOYMENT_GUIDE.md#incremental-aws-readiness-and-verification-tg-13).

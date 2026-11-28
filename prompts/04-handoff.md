@@ -1,1 +1,3 @@
 Prepare a handoff for another coding agent. Summarize the task goal, current verified state, decisions made, files changed, APIs/schemas affected, commands/tests and their exact outcomes, unresolved issues, risks, and the next smallest task. Include only facts verified in the repository. Do not claim incomplete work is finished.
+
+During the incremental release, also record required fixes, work-in-progress evidence, the last valid revision, unreconciled job/resource state and exact restart action in [TASKS.md](../TASKS.md#incremental-release-progress-2026-11-28). Report local, offline AWS readiness and live AWS states separately.

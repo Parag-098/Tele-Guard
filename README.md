@@ -1,5 +1,7 @@
 # TeleGuard AI
 
+> **Incremental release planning, 2026-11-28.** Start with the [master specification](TeleGuard_AI_Product_Scope_and_Feature_Blueprint.md#14-requirements-for-the-incremental-release-2026-11-28), [master implementation plan](TeleGuard_AI_Vibe_Coding_Execution_Plan.md#16-execution-plan-for-the-incremental-release-2026-11-28), [current audit](docs/REPOSITORY_AUDIT.md#incremental-release-audit-2026-11-28) and [progress tracker](TASKS.md#incremental-release-progress-2026-11-28). The quick start below describes the current application. The dates on test and deployment sections identify historical evidence.
+
 TeleGuard AI is an educational fraud intelligence simulation using synthetic telecom events and identities. It does not connect to carrier infrastructure, inspect real subscriber communications/location, or restrict real subscribers. Risk scores are review signals, not findings of fraud.
 
 ## Stack and layout
@@ -16,7 +18,7 @@ Install Docker Desktop / Docker Engine and Compose. Python 3.12 and Node 22 are 
 
 ```powershell
 Copy-Item .env.example .env
-# Edit .env and set unique local POSTGRES_PASSWORD, TG_SECRET_KEY, and TG_ADMIN_PASSWORD (12+ chars).
+# Edit .env and set a unique POSTGRES_PASSWORD, a random TG_SECRET_KEY of at least 32 bytes, and a unique TG_ADMIN_PASSWORD (12+ chars).
 docker compose up --build -d
 docker compose exec api python -m app.bootstrap
 ```
@@ -51,7 +53,7 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -e '.[dev]'
 $env:TG_DATABASE_URL='sqlite:///./teleguard.db'
-$env:TG_SECRET_KEY='local-only-replace-this-secret'
+$env:TG_SECRET_KEY='local-only-replace-this-secret-32'
 alembic upgrade head
 python -m app.bootstrap
 uvicorn app.main:app --reload
@@ -118,3 +120,15 @@ Current implementation includes login/JWT, backend role dependencies, synthetic 
 Implemented lifecycle controls include persisted PSI drift reports, real approval-gated retraining, challenger evaluation, model approval/rejection, rollback, shadow/canary routing, delayed-label monitoring, and browser-verified MLOps views. Scenario scoring stores location/travel findings with each prediction and displays them in investigation detail. Per-prediction SHAP and incident resolution provenance/search are implemented and tested. The AWS deployment is prepared but not live; see the deployment guide and release checklist. Vishing/NLP is deferred. Synthetic performance cannot establish real-world fraud performance.
 
 The 2026-11-19 acceptance pass additionally verifies the 150,000-row operational dataset, actual PostgreSQL persistence and model lifecycle promotion/rollback. Historical checkpoint statements in this README and older reports are superseded by [IMPLEMENTATION_AND_LOCAL_ACCEPTANCE_2026-11-19.md](docs/IMPLEMENTATION_AND_LOCAL_ACCEPTANCE_2026-11-19.md), which includes the measured model results, test evidence, limitations and AWS **NO-GO** decision. AWS resources were not created.
+
+## Incremental release at a glance
+
+TeleGuard AI is an educational prototype for explainable telecom fraud investigation and end-to-end automated MLOps on synthetic events. The current application includes authenticated ingestion, hybrid scoring, investigations, explainability, MLflow and a local lifecycle demo. The preserved dataset version synthetic-v2-150000-20261119 has 150,000 unique events. The incremental plan adds a persistent virtual network, stronger independent evaluation, scheduled drift and delayed-label monitoring, eligible automatic training, safe subscriber-level release controls and correlated cases.
+
+The planned enhancements require implementation and verification. The current Compose stack was stopped except for a restarting worker when audited, so use the quick start in an isolated development project and prove the exact build before treating historical local results as current. Public AWS deployment is an external acceptance gate requiring separate authorization.
+
+| Find | Source |
+|---|---|
+| Requirements and sequencing | [Specification](TeleGuard_AI_Product_Scope_and_Feature_Blueprint.md), [execution plan](TeleGuard_AI_Vibe_Coding_Execution_Plan.md), [tracker](TASKS.md) |
+| Technical design | [Architecture](ARCHITECTURE.md), [API/DB, UI and security](docs/SYSTEM_CONTRACTS.md), [dataset and simulator](docs/DATASET_AND_SIMULATOR.md), [ML methodology](docs/ML_POLICY.md) |
+| Evidence and operations | [Test matrix](docs/TESTING_AND_TRACEABILITY.md), [college demo](docs/COLLEGE_PRESENTATION_GUIDE.md), [AWS runbook](docs/AWS_DEPLOYMENT_GUIDE.md), [release checklist](docs/FINAL_RELEASE_CHECKLIST.md) |

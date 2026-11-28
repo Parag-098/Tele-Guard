@@ -31,6 +31,7 @@ services:
       MLFLOW_TRACKING_URI: http://mlflow:5000
       TG_ADMIN_USERNAME: ${TG_ADMIN_USERNAME:-}
       TG_ADMIN_PASSWORD: ${TG_ADMIN_PASSWORD:-}
+      TG_API_WORKERS: ${TG_API_WORKERS:-1}
     ports: ["8000:8000"]
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
@@ -44,7 +45,11 @@ services:
   web:
     build: ./frontend
     environment: ["VITE_API_URL=http://localhost:8000/api"]
-    ports: ["5173:80"]
+    ports: ["5173:8080"]
+    read_only: true
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=64m"]
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
     depends_on:
       api: {condition: service_healthy}
   worker:
@@ -64,7 +69,7 @@ services:
   mlflow:
     image: teleguard-api:local
     pull_policy: never
-    command: ["mlflow", "server", "--host", "0.0.0.0", "--port", "5000", "--backend-store-uri", "sqlite:////mlflow/mlflow.db", "--serve-artifacts", "--artifacts-destination", "/mlartifacts"]
+    command: ["mlflow", "server", "--host", "0.0.0.0", "--port", "5000", "--allowed-hosts", "mlflow:5000,localhost:*", "--backend-store-uri", "sqlite:////mlflow/mlflow.db", "--serve-artifacts", "--artifacts-destination", "/mlartifacts"]
     volumes:
       - "mlflow_data:/mlartifacts"
       - "mlflow_db:/mlflow"

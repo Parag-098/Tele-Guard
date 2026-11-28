@@ -1,0 +1,139 @@
+{
+  "schema": "teleguard-integrated-local-lifecycle-v1",
+  "accepted_at_local": "2026-11-28 Asia/Kolkata",
+  "synthetic_only": true,
+  "source_revision": "1898bd984d1fd6e505e5ba26fe2160885c3684ef",
+  "dataset": {
+    "persisted_initial_dataset_rows": 150000,
+    "research_development_manifest_rows": 300000,
+    "verified_eligible_training_rows": 209285,
+    "manifest_part_checksums_verified": true,
+    "labels_are_synthetic": true
+  },
+  "stream_and_monitoring": {
+    "simulator_run_id": "2fb27f5e-1f6d-46b0-8840-de2364e0143c",
+    "seed": 90281128,
+    "population": 512,
+    "configured_rate_per_second": 20,
+    "event_limit": 1000,
+    "cursor_completed": 1000,
+    "scored": 997,
+    "quarantined": 3,
+    "released_synthetic_outcomes": 997,
+    "monitoring": "persisted baseline/watch/drift-alert/data-quality windows; repeated drift breach surfaced; unlabeled feature shift was not misrepresented as predictive degradation"
+  },
+  "automatic_training": {
+    "trigger": "supported delayed-label performance degradation after scheduled monitoring windows",
+    "frozen_verified_labels": 480,
+    "invalid_or_unverified_labels_included": 0,
+    "chronological_partitions_checked_for_both_classes": true,
+    "worker_job_deduplicated_for_repeated_window_refresh": true,
+    "cooldown_scope": "one retraining job per cohort per one-hour cooldown",
+    "candidate_registered_in_mlflow": true,
+    "candidate_automatically_promoted": false,
+    "invalid_frozen_snapshot_rejected_before_dataset_persistence": true,
+    "crash_reconciliation": {
+      "dataset_version": "synthetic-v2-150000-20261119",
+      "mlflow_run_id": "d4e152391cec4350898c0129500dc07d",
+      "candidate_version": "synthetic-20261128125030009783",
+      "fault_injection": "worker child exited with code 86 immediately after MLflow registry write",
+      "restart_reused_finished_mlflow_run": true,
+      "exactly_one_canonical_model_run_recorded": true,
+      "durable_job_recovered_to_success": true,
+      "champion_unchanged": true
+    }
+  },
+  "candidate_quality_and_rollout": {
+    "dataset_version": "synthetic-v2-150000-20261119",
+    "candidate_version": "synthetic-20261128125030009783",
+    "comparison_id": "comparison-c0504cebbc",
+    "evaluation": {
+      "split": "chronological 15% holdout",
+      "rows": 22500,
+      "pr_auc": 0.99999859,
+      "recall": 1.0,
+      "false_positive_rate": 0.0001108,
+      "confusion_matrix": [[9023, 1], [0, 13476]],
+      "baseline_and_candidate_metrics_equal_on_this_synthetic_holdout": true
+    },
+    "approval": "authenticated administrator approval with recorded reason",
+    "shadow_and_canary": {
+      "configured_canary_fraction": 0.2,
+      "candidate_served": 1371,
+      "total_served": 7200,
+      "observed_candidate_share": 0.1904,
+      "fallbacks": 0
+    },
+    "rollback": {
+      "completed": true,
+      "restored_champion": "synthetic-20261119104849400309",
+      "active_serving_role": "champion"
+    }
+  },
+  "analyst_investigation": {
+    "case_id": "137099",
+    "event_id": "evt_dc106c24ea8e260950501b8c",
+    "adjudication_id": 27,
+    "outcome": "legitimate",
+    "reason_recorded": true,
+    "reviewer_and_timestamp_recorded": true,
+    "resolution_seconds": 187.936648,
+    "synthetic_only": true
+  },
+  "paired_incident_replay": {
+    "scored_events": 10000,
+    "alerts_evaluated": 5054,
+    "one_alert_per_event_investigations": 5054,
+    "correlated_investigations": 4520,
+    "duplicate_alert_reduction_fraction": 0.1056588841,
+    "correlated_episodes_detected": 49,
+    "known_synthetic_episodes": 80,
+    "missed_synthetic_episodes": 31,
+    "correlated_false_positive_cases": 419,
+    "correlated_unlabeled_cases": 4052,
+    "precision_at_review_budget_100": 0.4705882353,
+    "median_first_alert_seconds": 0,
+    "resolved_case_count": 1,
+    "median_resolution_seconds": 187.936648,
+    "captured_report": "incident-impact-2026-11-28.json",
+    "all_results_synthetic_and_nonrepresentative_of_real_world_performance": true,
+    "interpretation": "This later bounded sample is less favorable than the earlier replay; the reduction and missed-episode trade-off are reported without threshold changes."
+  },
+  "capacity": {
+    "api_workers": 2,
+    "host_logical_cpus": 16,
+    "steady_load_report": "load-replay-2026-11-28-steady.json",
+    "steady_requests_per_second": 10,
+    "steady_duration_seconds": 60,
+    "steady_p95_ms": 125,
+    "steady_errors": 0,
+    "sustained_report": "load-replay-2026-11-28-scaled-sustained.json",
+    "sustained_duration_seconds": 600,
+    "sustained_scheduled": 7200,
+    "sustained_persisted_events": 7200,
+    "sustained_persisted_predictions": 7200,
+    "sustained_errors": 0,
+    "sustained_backlog_after_drain": 0,
+    "sustained_total_p95_ms_including_burst": 4657
+  },
+  "release_and_recovery": {
+    "api_image": "teleguard-api:local",
+    "api_image_digest": "sha256:633dcd9945f341f1aa5ea185a727caf454f3412c12abc6847f095107d6865ac9",
+    "web_image": "teleguard-web:release",
+    "web_image_digest": "sha256:28f3a7c3706aa9d1be96d87cfa74a41d77efc390c4e80e001ab38382dbe55615",
+    "fresh_database_migration_head": "0010_investigations",
+    "api_and_worker_restart_recovery": true,
+    "release_browser_checks_passed": 1,
+    "backup_sha256": "07475cf828cea51826c60eb166b3eaa033b1e74c7cb2cb3d853b5447e780641f",
+    "network_isolated_postgresql_restore": true,
+    "restored_champion": "synthetic-20261128143947458655",
+    "restored_authenticated_prediction_event_id": "restored-api-smoke-eb550ead224d4917955ae44d22d792e8",
+    "smoke_exit_code": 0
+  },
+  "external_or_unresolved": {
+    "aws_provisioning_or_deployment": "not authorized and not performed",
+    "hosted_github_actions": "not run in this local workspace",
+    "real_telecom_validation": "not performed; all evidence is synthetic",
+    "exact_web_image_full_language_database_scan": "pending completion of Trivy Java vulnerability database download; no database update or scanner category was skipped"
+  }
+}

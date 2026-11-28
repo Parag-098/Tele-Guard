@@ -12,13 +12,17 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: {python-version: '3.12', cache: pip, cache-dependency-path: backend/pyproject.toml}
+      - run: python -m pip install --upgrade pip==26.3
+        working-directory: backend
       - run: python -m pip install -e '.[dev]'
+        working-directory: backend
+      - run: python -m pip_audit --skip-editable
         working-directory: backend
       - run: python -m ruff check app tests
         working-directory: backend
       - run: python -m pytest
         working-directory: backend
-        env: {TG_DATABASE_URL: 'sqlite:///./ci.db', TG_SECRET_KEY: 'ci-only-test-secret'}
+        env: {TG_DATABASE_URL: 'sqlite:///./ci.db', TG_SECRET_KEY: 'ci-only-test-secret-key-at-least-32-bytes'}
   frontend:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -30,88 +34,103 @@ jobs:
         working-directory: frontend
       - run: npm audit --audit-level=high
         working-directory: frontend
+      - run: npm run lint
+        working-directory: frontend
       - run: npm run build
         working-directory: frontend
-  containers:
+  infrastructure:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - name: Validate Compose configuration
-        run: docker compose config --quiet
+      - uses: hashicorp/setup-terraform@v3
+        with: {terraform_version: '1.10.5'}
+      - run: terraform -chdir=deploy/terraform fmt -check -recursive
+      - run: terraform -chdir=deploy/terraform init -backend=false -input=false -lockfile=readonly
+      - run: terraform -chdir=deploy/terraform validate
+      - name: Validate local and production Compose configurations
+        run: |
+          docker compose config --quiet
+          docker compose --env-file .env.production.example -f docker-compose.prod.yml config --quiet
+          docker compose --env-file .env.production.example -f docker-compose.prod.yml config --format json |
+            jq -e '[.services | to_entries[] | select(.value.ports) | .key] == ["proxy"]'
         env:
           POSTGRES_PASSWORD: ci-only-database-password
-          TG_SECRET_KEY: ci-only-test-secret
-      - name: Build API, MLflow, and frontend images
-        run: docker compose build api web
-        env:
-          POSTGRES_PASSWORD: ci-only-database-password
-          TG_SECRET_KEY: ci-only-test-secret
-      - name: Validate production Compose configuration
-        run: docker compose --env-file .env.production.example -f docker-compose.prod.yml config --quiet
-      - name: Build production frontend with same-origin API path
-        run: docker build --build-arg VITE_API_URL=/api -t teleguard-web:production-check ./frontend
+          TG_SECRET_KEY: ci-only-test-secret-key-at-least-32-bytes
+      - name: Check deployment shell syntax
+        run: |
+          for script in deploy/*.sh; do bash -n "$script"; done
+          bash -n deploy/terraform/bootstrap.sh.tftpl
+  containers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: '22', cache: npm, cache-dependency-path: frontend/package-lock.json}
+      - run: npm ci
+        working-directory: frontend
+      - run: npx playwright install chrome
+        working-directory: frontend
+      - name: Build exact release images
+        run: |
+          docker build --pull -t teleguard-api:release ./backend
+          docker build --pull --build-arg VITE_API_URL=/api -t teleguard-web:release ./frontend
+          docker pull postgres:16-alpine
+          docker pull caddy:2.10-alpine
+          mkdir -p release-images
+          {
+            printf 'TG_POSTGRES_IMAGE=%s\n' "$(docker image inspect --format '{{index .RepoDigests 0}}' postgres:16-alpine)"
+            printf 'TG_CADDY_IMAGE=%s\n' "$(docker image inspect --format '{{index .RepoDigests 0}}' caddy:2.10-alpine)"
+          } > release-images/runtime-images.env
+          cat release-images/runtime-images.env >> "$GITHUB_ENV"
+      - name: Verify production-shaped PostgreSQL, inference, browser and restore
+        run: bash deploy/smoke-release.sh
+        env: {RUN_BROWSER_SMOKE: '1'}
+      - name: Archive the images that passed CI
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: docker save teleguard-api:release teleguard-web:release | gzip > release-images/application.tar.gz
+      - uses: actions/upload-artifact@v4
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          name: locally-verified-images
+          path: release-images/
+          if-no-files-found: error
+          retention-days: 2
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [backend, frontend, containers]
+    needs: [backend, frontend, infrastructure, containers]
     runs-on: ubuntu-latest
     environment: production
+    concurrency:
+      group: teleguard-production
+      cancel-in-progress: false
     permissions:
       contents: read
       id-token: write
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: locally-verified-images
+          path: release-images/
+      - name: Load the same tested images
+        run: |
+          docker load -i release-images/application.tar.gz
+          cat release-images/runtime-images.env >> "$GITHUB_ENV"
       - name: Configure AWS credentials through GitHub OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION }}
+          role-to-assume: $${ vars.AWS_ROLE_ARN }}
+          aws-region: $${ vars.AWS_REGION }}
       - name: Login to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v2
-      - uses: docker/setup-buildx-action@v3
-      - name: Build and push API image
-        uses: docker/build-push-action@v6
-        with:
-          context: ./backend
-          push: true
-          platforms: linux/amd64
-          tags: ${{ vars.ECR_REGISTRY }}/teleguard-api:${{ github.sha }}
-      - name: Build and push frontend image
-        uses: docker/build-push-action@v6
-        with:
-          context: ./frontend
-          push: true
-          platforms: linux/amd64
-          build-args: VITE_API_URL=/api
-          tags: ${{ vars.ECR_REGISTRY }}/teleguard-web:${{ github.sha }}
-      - name: Deploy immutable release through SSM
-        shell: bash
+      - name: Publish digest references and deploy through restricted SSM document
+        run: bash deploy/publish-release.sh
         env:
-          DEPLOY_INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
-          RELEASE_SHA: ${{ github.sha }}
-        run: |
-          command_id=$(aws ssm send-command \
-            --instance-ids "$DEPLOY_INSTANCE_ID" \
-            --document-name AWS-RunShellScript \
-            --comment "TeleGuard release $RELEASE_SHA" \
-            --parameters "commands=[\"sudo /opt/teleguard/deploy-release.sh $RELEASE_SHA\"]" \
-            --query 'Command.CommandId' --output text)
-          for attempt in $(seq 1 60); do
-            status=$(aws ssm get-command-invocation \
-              --command-id "$command_id" --instance-id "$DEPLOY_INSTANCE_ID" \
-              --query Status --output text 2>/dev/null || true)
-            if [[ "$status" == "Success" ]]; then
-              aws ssm get-command-invocation --command-id "$command_id" \
-                --instance-id "$DEPLOY_INSTANCE_ID" --query StandardOutputContent --output text
-              exit 0
-            fi
-            if [[ "$status" == "Failed" || "$status" == "Cancelled" || "$status" == "TimedOut" ]]; then
-              aws ssm get-command-invocation --command-id "$command_id" \
-                --instance-id "$DEPLOY_INSTANCE_ID" --output json
-              exit 1
-            fi
-            sleep 10
-          done
-          echo "SSM deployment command did not finish within 10 minutes" >&2
-          exit 1
+          ECR_REGISTRY: $${ vars.ECR_REGISTRY }}
+          RELEASE_BUCKET: $${ vars.RELEASE_BUCKET }}
+          DEPLOY_INSTANCE_ID: $${ vars.EC2_INSTANCE_ID }}
+          DEPLOY_DOCUMENT: $${ vars.SSM_DEPLOY_DOCUMENT }}
+          RELEASE_SHA: $${ github.sha }}

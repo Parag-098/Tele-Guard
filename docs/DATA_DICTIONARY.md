@@ -1,5 +1,7 @@
 # Canonical Event Contract — `event-v1`
 
+> The opening table is the original event-v1 summary. The 2026-11-19 expansion and current JSON/Pydantic sources take precedence for fields and enum values. The [incremental contracts](SYSTEM_CONTRACTS.md) and [dataset specification](DATASET_AND_SIMULATOR.md) document proposed additions.
+
 The authoritative machine-readable definition is [`backend/app/schemas/event-contract.json`](../backend/app/schemas/event-contract.json), enforced by `backend/app/schemas.py` and persisted by `backend/app/models.py`. Use this contract in generation, ingestion, feature building, inference, investigation and UI responses. All identifiers are synthetic tokens. `event_time` is the canonical spelling (replaces `event_timestamp`); `network_token` is canonical (replaces `ip_token`).
 
 | Field | Type | Required | Meaning and validation |
@@ -29,3 +31,7 @@ The table above describes the original event-v1 baseline. The backward-compatibl
 Feature version `features-v1` retains the original first eleven columns; `features-v2` adds outgoing-call status, international/roaming ratios, rolling SMS and failed-auth counts, mean call duration and time since SIM change (18 total). Training and inference share the as-of-time `FeatureState`; label/scenario/identity tokens are excluded. The model adapter keeps old 11-column artifacts callable and stamps each saved prediction with the model's actual feature version.
 
 The accepted initial dataset is `synthetic-v2-150000-20261119`: 150,000 rows, seed 20261119, generator `synthetic-v2`, with 60,000 label 0 and 90,000 label 1 rows. Event type row counts: AUTHENTICATION 1,250; CALL 96,276; DEVICE_CHANGE 7,992; LOCATION 15,416; NETWORK_ACTIVITY 10,540; OTP_REQUEST 1,250; SIM_CHANGE 11,749; SMS 5,527. These are generator outputs, not a sample of carrier traffic. CSV ingestion requires `event_id,event_type,event_time,subscriber_id`, caps requests at 25 MB/5,000 data rows, validates the complete request before writing, and ignores duplicate event IDs.
+
+## Incremental provenance
+
+Preserve current event, prediction, observation and model records. Planned provenance separates event occurrence/arrival/scoring times, source and replay/run tags, immutable manifest, split and feature derivation, scored risk and classifier policy, model artifact digest and routing/release observation. Keep label source, reviewer, availability and correction references restricted and out of inference features. Existing rows remain readable without invented provenance. Test schema compatibility and backfill with [migration acceptance](TESTING_AND_TRACEABILITY.md#requirement-to-test-matrix).

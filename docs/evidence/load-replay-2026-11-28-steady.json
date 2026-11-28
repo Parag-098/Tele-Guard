@@ -1,0 +1,89 @@
+{
+  "api_url": "http://127.0.0.1:8000/api",
+  "environment": {
+    "container_memory": {
+      "teleguard-acceptance-api-1": {
+        "peak_bytes": 428972441,
+        "samples": 9
+      },
+      "teleguard-acceptance-db-1": {
+        "peak_bytes": 483812966,
+        "samples": 9
+      },
+      "teleguard-acceptance-mlflow-1": {
+        "peak_bytes": 2550136832,
+        "samples": 9
+      },
+      "teleguard-acceptance-worker-1": {
+        "peak_bytes": 235195596,
+        "samples": 9
+      }
+    },
+    "logical_cpus": 16,
+    "platform": "Windows-10-10.0.26300-SP0",
+    "python": "3.11.9"
+  },
+  "error_classes": {},
+  "failure_samples": [],
+  "finished_at_utc": "2026-11-28T14:03:34.990418+00:00",
+  "first_event_id": "evt_6466f6702b6569200f0ae36a",
+  "generator_namespace": "load-0d11a9a527d24fb8",
+  "per_status": {
+    "201": 600
+  },
+  "phases": {
+    "burst": {
+      "errors": 0,
+      "observed_throughput_rps": 0.0,
+      "request_latency_ms": {
+        "max": null,
+        "p50": null,
+        "p95": null
+      },
+      "schedule_lag_ms_p95": null,
+      "scheduled": 0,
+      "successful": 0
+    },
+    "steady": {
+      "errors": 0,
+      "observed_throughput_rps": 10.0,
+      "request_latency_ms": {
+        "max": 188.0,
+        "p50": 93.0,
+        "p95": 125.0
+      },
+      "schedule_lag_ms_p95": 9.0,
+      "scheduled": 600,
+      "successful": 600
+    }
+  },
+  "results": {
+    "error_rate": 0.0,
+    "errors": 0,
+    "jobs_queued_after": 0,
+    "jobs_running_after": 0,
+    "observed_throughput_rps": 9.99,
+    "persisted_event_delta": 600,
+    "persisted_prediction_delta": 600,
+    "request_latency_ms": {
+      "max": 188.0,
+      "p50": 93.0,
+      "p95": 125.0
+    },
+    "schedule_lag_ms_p95": 9.0,
+    "scheduled": 600,
+    "successful": 600,
+    "wall_seconds": 60.062
+  },
+  "run_id": "0d11a9a527d24fb8",
+  "schedule": {
+    "burst_multiplier": 2.0,
+    "burst_seconds": 0,
+    "steady_rps": 10.0,
+    "steady_seconds": 60,
+    "workers": 32
+  },
+  "schema": "teleguard-load-replay-v2",
+  "started_at_utc": "2026-11-28T14:02:34.928418+00:00",
+  "synthetic_only": true
+}

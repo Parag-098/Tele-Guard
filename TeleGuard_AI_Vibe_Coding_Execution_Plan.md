@@ -1,5 +1,7 @@
 # TeleGuard AI --- Vibe-Coding Project Execution Plan
 
+> **Authoritative execution plan, 2026-11-28.** Sections 1–15 preserve the original plan. Section 16 supersedes the earlier task-by-task prompting and rollout sequence for this incremental release. It becomes executable only when the owner issues the separate master implementation instruction. The [master specification](TeleGuard_AI_Product_Scope_and_Feature_Blueprint.md) defines the scope.
+
 **Project:** TeleGuard AI --- Intelligent Telecom Fraud Detection,
 Investigation & Prevention Platform\
 **Approach:** AI-assisted development ("vibe coding") with strict
@@ -784,3 +786,44 @@ demonstrable, measurable, and explainable.
 The first milestone is not an advanced fraud model. It is a clean
 repository with clear instructions, a runnable skeleton, automated
 checks, and a project specification that every coding agent can follow.
+
+## 16. Execution plan for the incremental release (2026-11-28)
+
+When the owner authorizes implementation, execute the mandatory local phases in order with one continuous instruction. This plan does not authorize AWS provisioning or paid actions. Preserve the modular monolith, existing integrations, historic evidence and repositories/data as specified in [AGENTS.md](AGENTS.md). Use the [audit](docs/REPOSITORY_AUDIT.md) to locate defects and the [matrix](docs/TESTING_AND_TRACEABILITY.md) to close requirements.
+
+| Task | Depends on | Work and principal code surfaces | Required exit evidence |
+|---|---|---|---|
+| TG-T00 Baseline and recovery | Implementation authorization | Inventory Git and active environments. Record recent evidence, Docker/DB state, migration head, model and artifacts. Rebuild exact source in an isolated Compose project. Run original backend and Playwright checks before edits, fix blocking startup/test harness issues and test upgrade against a preserved copy. | E-01 baseline and tool/version manifest. E-12 initial migration and recoverability evidence. |
+| TG-T01 Scoring and release correctness | T00 | In backend scoring, batch and ML lifecycle paths, share event ordering and decision policy, normalize IDs, hash full subscriber ID with stable experiment key, persist routing and policy. Add a transactional release state and current-champion comparison proofs. Remove implicit seed promotion beyond explicit bootstrap and preserve prior observations. | E-04 parity and late/tied-event fixtures, E-06 allocation/stale evidence/race and rollback tests. |
+| TG-T02 Data and simulator | T01 contract prerequisites | Extend schemas, generation, ingest adapters, dataset manifests, job worker, Alembic and Data Observatory. Preserve legacy import, dataset and controls. Add simulator profiles, bounded buffer, cursor and label release state. Generate 300k/50k/50k and report positive counts, overlap and lineage. | E-02 checksum/count/disjointness evidence and E-03 live start/pause/resume/stop/restart/backpressure. E-04 invalid/duplicate/quarantine behavior. |
+| TG-T03 ML evaluation and artifacts | T01, T02 | Train three tabular candidates using shared features, calibrated scores when justified and validation-only policy selection. Add immutable split proofs, independent scenario and prevalence reports, explainability replay inputs and artifact integrity in MLflow and model metadata. | E-05 reports, fit/holdout integrity, lineage, baseline comparisons, per-slice support, latency and offline replay evidence. |
+| TG-T04 Continuous monitoring | T02, T03 | Instrument real serving paths and ModelObservation. Schedule idempotent window aggregation and delayed-label evaluation, version frozen bins, prevent demo-window contamination, persist quality and degradation state and emit actionable monitoring health. | E-07 clean/shift/quality/degradation replay, repeated-breach and dedup tests, label coverage evidence. |
+| TG-T05 Automated lifecycle | T03, T04 | Extend dataset-job/worker, MLflow and lifecycle API. Persist durable jobs with stage, lease, retry/cooldown, dedup key, run reconciliation and cancel. Integrate eligible triggers, candidate gates, explicit approval, shadow, measured canary, suspension and recovery. | E-08 no-owner-command automatic retraining, crash/retry and negative trigger tests. E-06 failed candidate, approval, ramp and rollback drill. |
+| TG-T06 Investigations and feedback | T02, T03 | Extend incidents, audit, graph, labels and portal. Add bounded case linkage, review sampling and versioned correction/adjudication. Feed accepted feedback through dataset validation and compare incident policies on identical replay. | E-09 label provenance, RBAC and leakage tests. E-10 linkage, workload and replay evidence. Integrate approved feedback with T05 trigger. |
+| TG-T07 Complete UI and lab | T02–T06 | Extend App.tsx and OperationalViews.tsx using existing dependencies. Connect RBAC-aware controls, telemetry, lab runs, charts and incident workflows to persisted backend state. Add missing frontend tests and run browser demo in bounded accelerated mode. | E-11 role, accessibility, empty/failure and end-to-end UI evidence. E-14 real complete local demo. |
+| TG-T08 Reliability and deployment readiness | T01 onward, full gate after T07 | Harden runtime, extend health checks/telemetry, exact-image integration tests, secure production configuration, reproducible infrastructure definitions and release manifest/rollback. Exercise upgrade, encrypted storage backup flow using local equivalents, isolated restore and cold artifact retrieval. Document sizing, cost and teardown. | E-12 clean and upgrade Compose, backup/restore, liveness/readiness and recovery. E-13 offline AWS readiness evidence and external prerequisite list. |
+| TG-T09 Final acceptance and authorized AWS verification | T00–T08 | Close all locally achievable matrix rows, rerun from clean state and submit evidence. Only with explicit deployment approval run hosted release, inspect cloud resources, demo and perform AWS restore/rollback drills. | E-14 repeatable local demo; E-15 live AWS evidence only after authorization. Record completion states separately. |
+
+T06 can start once its prerequisites pass. Avoid making T05 contingent on a UI merge by using persisted, validated labeled fixtures from the same normal pipeline. Final integration must exercise reviewer-originated labels. Fix startup, safety and recovery bugs as soon as discovered because they affect later evidence. Profile before adopting infrastructure or tuning numerical gates.
+
+### Autonomous workflow and resumption
+
+1. Start with the master specification, this section, the matrix, the audit and TASKS.md. Read local instructions and matching feature specs, inspect Git state and pick the earliest unlocked task. Preserve pre-existing changes and provider data.
+2. Record the task ID, dependencies, planned edits and risks in TASKS.md. Work in small, reviewable vertical slices on the existing application. Use real input → persistence → inference/job → UI paths. Choose reversible implementation details independently within scope and record consequential decisions in DECISIONS.md.
+3. Add regression coverage at the failing boundary. Execute commands in isolated test state. Record date, source revision, dataset/run IDs, command exit status and measurable result. Leave failures open, diagnose them, retry within scope, and finish independent work during external blockers.
+4. Add discovered required work as TG-Fnn with the mapped TG requirement, parent task, reproduction, severity, dependencies and pass criterion. Reorder phases when a fix is a dependency. An optional item stays optional under its original conditions.
+5. After interruption, context compaction, or usage limit, read TASKS.md, the Git diff, and the last evidence entry. Resume the earliest incomplete prerequisite. Confirm any interrupted job’s persisted state before retrying and avoid replaying completed or destructive operations.
+6. Mark a task complete only after its acceptance rows pass on the final applicable revision. If blocked, record the exact command, reason, remaining scope, independent work performed and minimal owner action. Ask for owner help only for external access, permissions, budget, destructive actions or deployment authorization. The owner writes no application code.
+7. Produce the four completion states and list outstanding mandatory requirements. Do not imply cloud success from a configuration check or local Docker build.
+
+### External actions at release time
+
+The owner confirms academic acceptance of synthetic data if their rubric is ambiguous. This confirmation does not block the local synthetic-first plan. For live AWS, the owner supplies an authorized account or role, approves region and budget, grants GitHub environment/repository and domain/DNS access as needed, and explicitly authorizes provisioning and deployment. Provide exact actions in the [AWS guide](docs/AWS_DEPLOYMENT_GUIDE.md). Pause affected external work only and complete all offline work first.
+
+### Execution closeout record — 2026-11-28
+
+Local implementation has progressed through the integrated lifecycle and recovery checks recorded in [TASKS.md](TASKS.md#final-integrated-local-checkpoint--2026-11-28). Continue the exact-image security scan/reconciliation as the remaining local E-13 gate. Keep AWS provisioning and hosted acceptance separate: this plan and the current user authorization do not permit cloud deployment.
+
+### Final local execution closeout — 2026-11-28
+
+The remaining exact-image Trivy scan, source reconciliation, offline regional cost estimate and exact-image recovery smoke have been completed and recorded in [the final checkpoint](TASKS.md#final-locally-achievable-completion-checkpoint--2026-11-28) and [acceptance report](docs/LOCAL_ACCEPTANCE_2026-11-28.md#final-local-closure-and-offline-readiness--2026-11-28). E-01–E-14 are accepted locally; TG-T00–TG-T08 and local TG-T09 work are complete. API Scout's reconciled metadata finding remains unsuppressed and its other 2 medium/28 low counts remain disclosed. E-15 live AWS and hosted GitHub checks are external and unauthorized. No cloud deployment is claimed.

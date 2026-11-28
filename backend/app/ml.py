@@ -21,6 +21,7 @@ from sklearn.metrics import (
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 from app.config import settings
+from app.decision_policy import classifier_decision
 from app.synthetic import generate_events
 
 FEATURES = [
@@ -164,13 +165,22 @@ class FeatureState:
 def features(rows: list[dict]) -> pd.DataFrame:
     if not rows:
         return pd.DataFrame(columns=FEATURES)
-    ordered = sorted(enumerate(rows), key=lambda item: (item[1]["event_time"], item[0]))
+    ordered = sorted(enumerate(rows), key=lambda item: event_sort_key(item[1]))
     state = FeatureState()
     values = state.transform([row for _, row in ordered]).to_numpy()
     result = np.empty_like(values)
     original_indices = np.fromiter((index for index, _ in ordered), dtype=np.int64)
     result[original_indices] = values
     return pd.DataFrame(result, columns=FEATURES, dtype=float)
+
+
+def event_sort_key(row):
+    timestamp = row["event_time"]
+    if isinstance(timestamp, str):
+        timestamp = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    return timestamp, row.get("event_id", "")
 
 
 def train_model(
@@ -181,11 +191,13 @@ def train_model(
     rows = rows or [e.model_dump() for e in generate_events(1400, 2026)]
     X = features(rows)
     y = np.array([r["fraud_label"] for r in rows])
-    ordered = np.argsort([r["event_time"] for r in rows])
+    ordered = np.asarray(sorted(range(len(rows)), key=lambda index: event_sort_key(rows[index])))
     train_end = max(1, int(len(ordered) * 0.70))
     validation_end = max(train_end + 1, int(len(ordered) * 0.85))
     validation_end = min(validation_end, len(ordered) - 1)
     tr, val, te = ordered[:train_end], ordered[train_end:validation_end], ordered[validation_end:]
+    if any(len(set(y[split])) != 2 for split in (tr, val, te)):
+        raise ValueError("Every chronological training split requires both classes")
     candidates = {
         "LogisticRegression": make_pipeline(
             StandardScaler(),
@@ -218,7 +230,7 @@ def train_model(
         started = perf_counter()
         probability = candidate.predict_proba(X.iloc[te])[:, 1]
         inference_elapsed = max(perf_counter() - started, 1e-9)
-        predicted = (probability >= 0.5).astype(int)
+        predicted = classifier_decision(probability).astype(int)
         tn, fp, fn, tp = confusion_matrix(y[te], predicted, labels=[0, 1]).ravel()
         reports[name] = {
             "precision": float(precision_score(y[te], predicted, zero_division=0)),
@@ -243,7 +255,7 @@ def train_model(
         "model_comparison": reports,
         "split": "chronological 70/15/15 train/validation/test; selection on validation, final metrics on untouched test",
         "evaluation_note": "Synthetic deterministic holdout; not real-world performance.",
-        "evaluation_threshold": 0.5,
+        "evaluation_threshold": settings.classification_threshold,
         "dataset_rows": len(rows),
         "dataset_version": dataset_version or "synthetic-v2-seed-2026",
         "generator_version": "synthetic-v2",
@@ -251,7 +263,7 @@ def train_model(
         "by_scenario": {},
     }
     final_probability = model.predict_proba(X.iloc[te])[:, 1]
-    final_prediction = (final_probability >= 0.5).astype(int)
+    final_prediction = classifier_decision(final_probability).astype(int)
     for scenario in sorted({str(rows[i].get("scenario_label") or "unknown") for i in te}):
         mask = np.asarray([str(rows[i].get("scenario_label") or "unknown") == scenario for i in te])
         labels = y[te][mask]
@@ -299,12 +311,17 @@ def train_model(
     }
 
 
-def explain_prediction(model: dict, row: dict, context: list[dict], background) -> dict:
+def explain_prediction(model: dict, row: dict, context: list[dict], background, scored_features=None) -> dict:
     """Explain one prediction from its original model and exact features, on demand."""
     import shap
 
     columns = model_feature_columns(model)
-    x = model_input(model, features(context + [row])).tail(1)
+    if scored_features is None:
+        x = model_input(model, features(context + [row])).tail(1)
+    else:
+        if set(scored_features) != set(columns):
+            raise ValueError("Stored scoring features do not match the model schema")
+        x = pd.DataFrame([scored_features], columns=columns, dtype=float)
     if list(x.columns) != columns or x.shape != (1, len(columns)):
         raise ValueError("Could not map the event to the model's feature schema")
     background = pd.DataFrame(background, columns=columns, dtype=float)
@@ -334,6 +351,17 @@ def explain_prediction(model: dict, row: dict, context: list[dict], background) 
             raise ValueError(f"Unsupported SHAP output shape for random forest: {values.shape}")
         output_scale = "fraud_probability"
         predicted_value = float(classifier.predict_proba(x)[0, 1])
+    elif algorithm == "HistGradientBoostingClassifier":
+        explainer = shap.TreeExplainer(classifier, data=background, model_output="raw",
+                                       feature_perturbation="interventional", feature_names=columns)
+        explanation = explainer(x)
+        values = np.asarray(explanation.values)
+        if values.shape != (1, len(columns)):
+            raise ValueError(f"Unsupported SHAP output shape for histogram gradient boosting: {values.shape}")
+        contributions = values[0]
+        base_value = float(np.asarray(explanation.base_values).reshape(-1)[0])
+        output_scale = "fraud_log_odds"
+        predicted_value = float(classifier.decision_function(x)[0])
     elif algorithm == "LogisticRegression":
         if not hasattr(classifier, "named_steps"):
             raise ValueError("Logistic Regression artifact is missing its fitted preprocessing pipeline")
@@ -372,13 +400,13 @@ def explain_prediction(model: dict, row: dict, context: list[dict], background) 
     return {
         "model_version": model["version"],
         "algorithm": algorithm,
-        "feature_version": FEATURE_VERSION,
+        "feature_version": model_feature_version(model),
         "output_scale": output_scale,
         "base_value": base_value,
         "predicted_value": predicted_value,
         "additivity_residual": reconstructed - predicted_value,
         "background_rows": len(background),
-        "method": "SHAP TreeExplainer" if algorithm == "RandomForestClassifier" else "SHAP LinearExplainer",
+        "method": "SHAP LinearExplainer" if algorithm == "LogisticRegression" else "SHAP TreeExplainer",
         "contributions": [
             {
                 "feature": name,
@@ -417,7 +445,16 @@ def track_training_run(result: dict) -> str:
 
     artifact = joblib.load(result["artifact_path"])
     mlflow.set_experiment("teleguard-synthetic-fraud")
+    if result.get("job_id"):
+        prior = mlflow.search_runs(
+            filter_string=f"tags.teleguard_job_id = '{result['job_id']}' and attributes.status = 'FINISHED'",
+            max_results=1, output_format="list",
+        )
+        if prior:
+            return prior[0].info.run_id
     with mlflow.start_run(run_name=result["version"]) as run:
+        if result.get("job_id"):
+            mlflow.set_tag("teleguard_job_id", result["job_id"])
         mlflow.log_param("dataset_version", result.get("dataset_version", "scenario-v1-seed-2026"))
         mlflow.log_param("algorithm", result["algorithm"])
         mlflow.log_param("feature_version", FEATURE_VERSION)
@@ -427,8 +464,15 @@ def track_training_run(result: dict) -> str:
         mlflow.log_artifact(result["artifact_path"])
         mlflow.sklearn.log_model(
             artifact["model"],
-            artifact_path="classifier",
+            name="classifier",
             registered_model_name="TeleGuardSyntheticFraud",
+            # Training candidates are instantiated and fitted by this module. HistGradientBoosting
+            # persists sklearn's internal TreePredictor, which MLflow's safe skops loader cannot
+            # infer as trusted automatically. Trust only that known sklearn implementation type;
+            # never derive this list from uploaded data or a user-supplied model artifact.
+            skops_trusted_types=[
+                "sklearn.ensemble._hist_gradient_boosting.predictor.TreePredictor"
+            ],
         )
         return run.info.run_id
 
@@ -509,6 +553,7 @@ def score(row: dict, model, context: list[dict]) -> dict:
         "anomaly_score": anomaly,
         "graph_score": graph,
         "rule_score": rule,
+        "monitor_features": {key: float(value) for key, value in x.iloc[0].items()},
         "risk_score": risk,
         "risk_band": "Critical"
         if risk >= 0.8
